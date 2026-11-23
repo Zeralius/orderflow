@@ -4,7 +4,9 @@
 
 An event-driven online-shop backend: Spring Boot microservices that talk over Apache Kafka. One order runs as a **saga** across the services, and every failure path (out of stock, payment declined) is handled and undone where needed.
 
-> Status: **feature-complete core**. The saga runs across the services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Customers get an email when their order is confirmed or cancelled. Everything sits behind a rate-limited API gateway with one Swagger UI for all APIs, and users log in through Keycloak. ArchUnit rules enforce the architecture in every build. Every service reports metrics to Prometheus (with a Grafana dashboard), and one order is one trace across all services, even through Kafka and the outbox. An end-to-end test runs the real Docker images with real logins, real email and real traces. The whole system also runs on Kubernetes from one Helm chart, and CI installs it on a kind cluster and places an order through it on every push. Next: a cloud deployment (see [Roadmap](#roadmap)).
+![OrderFlow in 30 seconds: Swagger UI, an order through the gateway, the confirmation email, the Grafana dashboard, one trace across five services, and the chaos demo](docs/demo.gif)
+
+> Status: **feature-complete core**. The saga runs across the services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Customers get an email when their order is confirmed or cancelled. Everything sits behind a rate-limited API gateway with one Swagger UI for all APIs, and users log in through Keycloak. ArchUnit rules enforce the architecture in every build. Every service reports metrics to Prometheus (with a Grafana dashboard), and one order is one trace across all services, even through Kafka and the outbox. An end-to-end test runs the real Docker images with real logins, real email and real traces. The whole system also runs on Kubernetes from one Helm chart, and CI installs it on a kind cluster and places an order through it on every push. A [chaos demo](#chaos-demo) kills services and Kafka in the middle of orders: every order still finishes, none twice. Next: a cloud deployment (see [Roadmap](#roadmap)).
 
 ## Architecture
 
@@ -296,6 +298,27 @@ helm install orderflow deploy/helm/orderflow -n orderflow --create-namespace --w
 helm test orderflow -n orderflow --logs
 ```
 
+## Chaos demo
+
+What happens when parts of the system die in the middle of an order? [`deploy/chaos-demo.sh`](deploy/chaos-demo.sh) finds out against the running Compose system: it kills a piece with `SIGKILL` (no clean shutdown), keeps placing orders, brings the piece back and waits until every order has reached its final state.
+
+```bash
+./mvnw -q package -DskipTests && docker compose --profile apps up -d --build --wait
+deploy/chaos-demo.sh
+```
+
+| Killed | While it is down | After it is back | Why nothing is lost |
+|---|---|---|---|
+| **payment-service** | Orders are accepted (202) and stop at `STOCK_RESERVED` | All 5 `CONFIRMED` after 37 s | The payment commands wait in Kafka; nobody has read them yet |
+| **Kafka** | Orders are still accepted; they stay `PENDING`, and the outbox backlog grows to 5 | All 5 `CONFIRMED` after 17 s, backlog back to 0 | Each order and its first command were written in one database transaction; the outbox relay sends them once Kafka is back |
+| **order-service** (the saga itself), with orders in flight | Inventory answers anyway; its replies wait in Kafka | All 5 `CONFIRMED` after 35 s | The saga's state is in PostgreSQL, not in memory, and a reply's offset is only committed after it has been processed |
+
+At the end the script checks the payments table: one payment per order, none charged twice (in the run above, 79 payments for 79 orders).
+
+**Why recovery takes half a minute.** The service itself is back in about 13 s. The rest is Kafka: the killed instance never said goodbye, so the broker waits until its session times out before it hands the partitions to the restarted one (payment-service started at 15:18:47 and got its partitions at 15:19:09). Static group membership (`group.instance.id`) would let a restarted instance take over its old partitions at once; for a demo the default is fine, and the point stands: slower, but nothing lost.
+
+**On Kubernetes, without any pause at all.** With two order-service replicas, a rolling restart (`kubectl rollout restart deploy/order-service`) while orders kept coming: 40 orders placed during the restart, 40 answered 202, 40 `CONFIRMED`. The readiness probes and the `preStop` pause keep requests away from pods that are starting or stopping, and the outbox relays of the old and new pods never send the same row twice (`SKIP LOCKED`).
+
 ## Build and test
 
 ```bash
@@ -404,6 +427,7 @@ Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per 
 - [x] Security & edge: Keycloak (OAuth2/JWT, roles, audience), Spring Cloud Gateway, ownership checks, end-to-end with real logins
 - [x] Edge polish: notification-service with Mailpit, rate limiting at the gateway, OpenAPI + one Swagger UI with Keycloak login, ArchUnit rules
 - [x] Observability: business metrics with Micrometer + Prometheus, a provisioned Grafana dashboard, OpenTelemetry tracing into Jaeger, traces carried across the outbox
+- [x] Chaos demo (`deploy/chaos-demo.sh`) and a demo GIF
 - [x] Kubernetes: one Helm chart for the whole system, kind locally and in CI, probes, graceful rollouts, NetworkPolicies, non-root read-only pods, `helm test`
 - [ ] Cloud deployment, Spring AI order-support assistant
 
