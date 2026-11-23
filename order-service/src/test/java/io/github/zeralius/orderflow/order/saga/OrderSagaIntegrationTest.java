@@ -85,7 +85,7 @@ class OrderSagaIntegrationTest {
 
     sender.send(PAYMENT_REPLIES, id, new PaymentCompleted(id, UUID.randomUUID()));
     assertThat(read(ORDER_EVENTS, id, OrderEvent.class))
-        .isEqualTo(new OrderConfirmed(id, "alice", TOTAL));
+        .isEqualTo(new OrderConfirmed(id, "alice", "alice@example.com", TOTAL));
 
     Order order = orders.findById(id).orElseThrow();
     assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
@@ -108,7 +108,7 @@ class OrderSagaIntegrationTest {
 
     sender.send(INVENTORY_REPLIES, id, new StockReleased(id));
     assertThat(read(ORDER_EVENTS, id, OrderEvent.class))
-        .isEqualTo(new OrderCancelled(id, "bob", "Card declined"));
+        .isEqualTo(new OrderCancelled(id, "bob", "bob@example.com", "Card declined"));
     assertThat(orders.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CANCELLED);
   }
 
@@ -120,7 +120,7 @@ class OrderSagaIntegrationTest {
     sender.send(INVENTORY_REPLIES, id, new StockReservationFailed(id, "Out of stock"));
 
     assertThat(read(ORDER_EVENTS, id, OrderEvent.class))
-        .isEqualTo(new OrderCancelled(id, "carol", "Out of stock"));
+        .isEqualTo(new OrderCancelled(id, "carol", "carol@example.com", "Out of stock"));
     probe.expectNone(PAYMENT_COMMANDS, id, Duration.ofSeconds(2));
   }
 

@@ -43,7 +43,8 @@ class ReliableMessagingTest {
   @Test
   void outboxRowIsRelayedWithItsMessageIdAndMarkedSent() {
     try (var probe = new TestSupport.TopicProbe(consumers, INVENTORY_COMMANDS)) {
-      Order order = saga.placeOrder("erin", List.of(new OrderLine("MUG-COFFEE", 1)));
+      Order order =
+          saga.placeOrder("erin", "erin@example.com", List.of(new OrderLine("MUG-COFFEE", 1)));
 
       ConsumerRecord<String, String> record = probe.nextRecord(INVENTORY_COMMANDS, order.getId());
       UUID messageId = Headers.messageId(record).orElseThrow();
@@ -67,7 +68,7 @@ class ReliableMessagingTest {
     try (var probe = new TestSupport.TopicProbe(consumers, ORDER_EVENTS)) {
       new TransactionTemplate(transactionManager)
           .executeWithoutResult(status -> {
-            outbox.add(ORDER_EVENTS, orderId, new OrderCancelled(orderId, "x", "test"));
+            outbox.add(ORDER_EVENTS, orderId, new OrderCancelled(orderId, "x", null, "test"));
             status.setRollbackOnly();
           });
 
@@ -87,7 +88,7 @@ class ReliableMessagingTest {
     UUID orderId = UUID.randomUUID();
 
     assertThatThrownBy(
-            () -> outbox.add(ORDER_EVENTS, orderId, new OrderCancelled(orderId, "x", "test")))
+            () -> outbox.add(ORDER_EVENTS, orderId, new OrderCancelled(orderId, "x", null, "test")))
         .isInstanceOf(IllegalTransactionStateException.class);
   }
 

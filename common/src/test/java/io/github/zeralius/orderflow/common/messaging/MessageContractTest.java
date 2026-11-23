@@ -56,11 +56,13 @@ class MessageContractTest {
             new PaymentCompleted(ORDER, UUID.randomUUID()), PaymentReply.class, "PaymentCompleted"),
         Arguments.of(new PaymentFailed(ORDER, "Declined"), PaymentReply.class, "PaymentFailed"),
         Arguments.of(
-            new OrderConfirmed(ORDER, "alice", new BigDecimal("25.00")),
+            new OrderConfirmed(ORDER, "alice", "alice@example.com", new BigDecimal("25.00")),
             OrderEvent.class,
             "OrderConfirmed"),
         Arguments.of(
-            new OrderCancelled(ORDER, "alice", "Declined"), OrderEvent.class, "OrderCancelled"));
+            new OrderCancelled(ORDER, "alice", "alice@example.com", "Declined"),
+            OrderEvent.class,
+            "OrderCancelled"));
   }
 
   @ParameterizedTest(name = "{2}")

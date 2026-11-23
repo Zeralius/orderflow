@@ -76,6 +76,24 @@ class GatewayTest {
   }
 
   @Test
+  void eachServicesApiDescriptionIsServedPubliclyUnderDocs() {
+    assertThat(mvc.get().uri("/docs/orders").exchange()).hasStatus(HttpStatus.OK);
+    assertThat(mvc.get().uri("/docs/payments").exchange()).hasStatus(HttpStatus.OK);
+
+    assertThat(received).containsExactly("GET /v3/api-docs", "GET /v3/api-docs");
+  }
+
+  @Test
+  void swaggerUiListsAllServices() {
+    assertThat(mvc.get().uri("/v3/api-docs/swagger-config").exchange())
+        .hasStatus(HttpStatus.OK)
+        .bodyJson()
+        .extractingPath("$.urls[*].url")
+        .asArray()
+        .containsExactlyInAnyOrder("/docs/orders", "/docs/inventory", "/docs/payments");
+  }
+
+  @Test
   void requestWithoutTokenStopsAtTheGateway() {
     assertThat(mvc.get().uri("/api/orders/42").exchange()).hasStatus(HttpStatus.UNAUTHORIZED);
 

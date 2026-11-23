@@ -15,7 +15,10 @@ public sealed interface OrderEvent {
 
   UUID orderId();
 
-  record OrderConfirmed(UUID orderId, String customerId, BigDecimal total) implements OrderEvent {}
+  /** {@code customerEmail} may be null if the account has no email address. */
+  record OrderConfirmed(UUID orderId, String customerId, String customerEmail, BigDecimal total)
+      implements OrderEvent {}
 
-  record OrderCancelled(UUID orderId, String customerId, String reason) implements OrderEvent {}
+  record OrderCancelled(UUID orderId, String customerId, String customerEmail, String reason)
+      implements OrderEvent {}
 }

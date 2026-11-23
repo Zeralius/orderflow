@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -34,9 +35,10 @@ import org.testcontainers.utility.MountableFile;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * The whole system as a customer sees it. The three services and the gateway run as Docker
- * containers built from their real jars, with PostgreSQL, Kafka and Keycloak. The test logs in at
- * Keycloak like a user would and then talks only to the gateway.
+ * The whole system as a customer sees it. The four services and the gateway run as Docker
+ * containers built from their real jars, with PostgreSQL, Kafka, Keycloak and Mailpit. The test
+ * logs in at Keycloak like a user would, talks only to the gateway, and reads the emails the
+ * customers got from Mailpit.
  */
 class OrderFlowSystemIT {
 
@@ -54,9 +56,11 @@ class OrderFlowSystemIT {
   private static PostgreSQLContainer postgres;
   private static KafkaContainer kafka;
   private static GenericContainer<?> keycloak;
+  private static GenericContainer<?> mailpit;
   private static GenericContainer<?> orderService;
   private static GenericContainer<?> inventoryService;
   private static GenericContainer<?> paymentService;
+  private static GenericContainer<?> notificationService;
   private static GenericContainer<?> gateway;
 
   @BeforeAll
@@ -93,11 +97,22 @@ class OrderFlowSystemIT {
                     .forPort(8080)
                     .forStatusCode(200)
                     .withStartupTimeout(Duration.ofMinutes(3)));
-    Startables.deepStart(postgres, kafka, keycloak).join();
+    mailpit =
+        new GenericContainer<>(DockerImageName.parse("axllent/mailpit:v1.34.0"))
+            .withNetwork(network)
+            .withNetworkAliases("mailpit")
+            .withExposedPorts(8025)
+            .waitingFor(Wait.forHttp("/api/v1/info").forPort(8025));
+    Startables.deepStart(postgres, kafka, keycloak, mailpit).join();
 
     orderService = service("order-service", 8081, Map.of("DB_URL", jdbc("orders")));
     inventoryService = service("inventory-service", 8082, Map.of("DB_URL", jdbc("inventory")));
     paymentService = service("payment-service", 8083, Map.of("DB_URL", jdbc("payments")));
+    notificationService =
+        service(
+            "notification-service",
+            8084,
+            Map.of("DB_URL", jdbc("notifications"), "MAIL_HOST", "mailpit", "MAIL_PORT", "1025"));
     gateway =
         service(
             "gateway",
@@ -105,15 +120,27 @@ class OrderFlowSystemIT {
             Map.of(
                 "ORDER_SERVICE_URL", "http://order-service:8081",
                 "INVENTORY_SERVICE_URL", "http://inventory-service:8082",
-                "PAYMENT_SERVICE_URL", "http://payment-service:8083"));
-    Startables.deepStart(orderService, inventoryService, paymentService, gateway).join();
+                "PAYMENT_SERVICE_URL", "http://payment-service:8083",
+                // The tests poll; the default 120/min per user is for real traffic
+                "RATE_LIMIT_PER_MINUTE", "1000"));
+    Startables.deepStart(
+            orderService, inventoryService, paymentService, notificationService, gateway)
+        .join();
   }
 
   @AfterAll
   static void stopSystem() {
     for (var container :
         new GenericContainer<?>[] {
-          gateway, orderService, inventoryService, paymentService, keycloak, kafka, postgres
+          gateway,
+          orderService,
+          inventoryService,
+          paymentService,
+          notificationService,
+          mailpit,
+          keycloak,
+          kafka,
+          postgres
         }) {
       if (container != null) {
         container.stop();
@@ -134,6 +161,9 @@ class OrderFlowSystemIT {
     assertThat(order.customerId()).isEqualTo("alice");
     assertThat(order.total()).isEqualByComparingTo("79.80");
     assertThat(stockOf("BOOK-JAVA25")).isEqualTo(98);
+    Map<String, Object> mail = awaitMail("alice@example.com", order.id());
+    assertThat(mail.get("Subject")).isEqualTo("Your OrderFlow order is confirmed");
+    assertThat((String) mail.get("Snippet")).contains("79.80");
   }
 
   @Test
@@ -159,6 +189,21 @@ class OrderFlowSystemIT {
             PaymentView.class);
     assertThat(payment.status()).isEqualTo("DECLINED");
     assertThat(stockOf("HEADSET-PRO")).as("compensation returned the stock").isEqualTo(10);
+    Map<String, Object> mail = awaitMail("carol@example.com", order.id());
+    assertThat(mail.get("Subject")).isEqualTo("Your OrderFlow order was cancelled");
+    assertThat((String) mail.get("Snippet")).contains("exceeds the limit");
+  }
+
+  // --- API docs ---
+
+  @Test
+  void theGatewayServesSwaggerUiAndEveryServicesApiDescription() throws Exception {
+    assertThat(call("GET", "/swagger-ui/index.html", null, null).statusCode()).isEqualTo(200);
+    for (String service : List.of("orders", "inventory", "payments")) {
+      HttpResponse<String> docs = call("GET", "/docs/" + service, null, null);
+      assertThat(docs.statusCode()).as(service).isEqualTo(200);
+      assertThat(docs.body()).as(service).contains("\"openapi\"").contains("\"/api\"");
+    }
   }
 
   // --- Security, end to end ---
@@ -224,6 +269,32 @@ class OrderFlowSystemIT {
             Wait.forHttp("/actuator/health")
                 .forStatusCode(200)
                 .withStartupTimeout(Duration.ofMinutes(2)));
+  }
+
+  /** Waits until Mailpit has a mail to {@code address} that mentions the order. */
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> awaitMail(String address, String orderId) throws Exception {
+    URI inbox =
+        URI.create(
+            "http://%s:%d/api/v1/messages"
+                .formatted(mailpit.getHost(), mailpit.getMappedPort(8025)));
+    String shortId = orderId.substring(0, 8);
+    long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+    while (System.nanoTime() < deadline) {
+      String body =
+          http.send(HttpRequest.newBuilder(inbox).build(), HttpResponse.BodyHandlers.ofString())
+              .body();
+      var messages = (List<Map<String, Object>>) json.readValue(body, Map.class).get("messages");
+      for (Map<String, Object> message : messages) {
+        var to = (List<Map<String, Object>>) message.get("To");
+        if (to.stream().anyMatch(t -> address.equals(t.get("Address")))
+            && String.valueOf(message.get("Snippet")).contains(shortId)) {
+          return message;
+        }
+      }
+      Thread.sleep(300);
+    }
+    throw new AssertionError("No mail to " + address + " about order " + orderId);
   }
 
   private static String jdbc(String database) {

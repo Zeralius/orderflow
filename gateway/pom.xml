@@ -12,7 +12,12 @@
 
     <artifactId>gateway</artifactId>
     <name>OrderFlow :: Gateway</name>
-    <description>The single entry point: checks the token, then routes /api/** to the services.</description>
+    <description>The single entry point: checks the token, limits the request rate, then routes /api/** to the services.</description>
+
+    <properties>
+        <!-- The version Spring Cloud Gateway 5.1 is built against -->
+        <bucket4j.version>8.22.0</bucket4j.version>
+    </properties>
 
     <dependencies>
         <dependency>
@@ -23,9 +28,29 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway-server-webmvc</artifactId>
         </dependency>
+        <!-- Swagger UI for all services' APIs in one place -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- Rate limiting: token buckets, kept in memory per gateway instance -->
+        <dependency>
+            <groupId>com.bucket4j</groupId>
+            <artifactId>bucket4j_jdk17-core</artifactId>
+            <version>${bucket4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.bucket4j</groupId>
+            <artifactId>bucket4j_jdk17-caffeine</artifactId>
+            <version>${bucket4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
 
         <dependency>
@@ -36,6 +61,11 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.zeralius.orderflow</groupId>
+            <artifactId>orderflow-architecture-rules</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

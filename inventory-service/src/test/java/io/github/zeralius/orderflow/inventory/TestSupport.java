@@ -41,12 +41,20 @@ public final class TestSupport {
   /** A valid token without any OrderFlow role. */
   public static RequestPostProcessor userWithoutRoles(String username) {
     return SecurityMockMvcRequestPostProcessors.jwt()
-        .jwt(token -> token.subject(username).claim("preferred_username", username));
+        .jwt(token ->
+            token
+                .subject(username)
+                .claim("preferred_username", username)
+                .claim("email", username + "@example.com"));
   }
 
   private static RequestPostProcessor user(String username, String role) {
     return SecurityMockMvcRequestPostProcessors.jwt()
-        .jwt(token -> token.subject(username).claim("preferred_username", username))
+        .jwt(token ->
+            token
+                .subject(username)
+                .claim("preferred_username", username)
+                .claim("email", username + "@example.com"))
         .authorities(new SimpleGrantedAuthority("ROLE_" + role));
   }
 

@@ -20,10 +20,28 @@ spring:
           audiences: orderflow-api
 
 orderflow:
+  rate-limit:
+    # Per logged-in user (or per IP for anonymous calls), across all routes of one gateway instance
+    requests-per-minute: ${RATE_LIMIT_PER_MINUTE:120}
   services:
     order: ${ORDER_SERVICE_URL:http://localhost:8081}
     inventory: ${INVENTORY_SERVICE_URL:http://localhost:8082}
     payment: ${PAYMENT_SERVICE_URL:http://localhost:8083}
+
+springdoc:
+  swagger-ui:
+    # One Swagger UI for all services; each description comes through the gateway
+    urls:
+      - name: orders
+        url: /docs/orders
+      - name: products and stock
+        url: /docs/inventory
+      - name: payments (admin)
+        url: /docs/payments
+    oauth:
+      client-id: orderflow-demo
+      use-pkce-with-authorization-code-grant: true
+      scopes: openid
 
 management:
   endpoints:

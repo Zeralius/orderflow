@@ -23,9 +23,11 @@
         <module>common</module>
         <module>messaging</module>
         <module>security</module>
+        <module>architecture-rules</module>
         <module>order-service</module>
         <module>inventory-service</module>
         <module>payment-service</module>
+        <module>notification-service</module>
         <module>gateway</module>
         <module>e2e-tests</module>
     </modules>
@@ -35,6 +37,8 @@
         <spotless.version>3.12.0</spotless.version>
         <jacoco.version>0.8.16</jacoco.version>
         <spring-cloud.version>2026.0.0</spring-cloud.version>
+        <springdoc.version>3.2.1</springdoc.version>
+        <archunit.version>1.5.1</archunit.version>
     </properties>
 
     <dependencyManagement>
@@ -52,6 +56,33 @@
             <dependency>
                 <groupId>io.github.zeralius.orderflow</groupId>
                 <artifactId>orderflow-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <!-- OpenAPI docs (springdoc 3.2 is built for Spring Boot 4.2) -->
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-common</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <!-- Architecture tests -->
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit-junit5</artifactId>
+                <version>${archunit.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.zeralius.orderflow</groupId>
+                <artifactId>orderflow-architecture-rules</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <!-- Spring Cloud 2026.0 is built for Spring Boot 4.2 -->

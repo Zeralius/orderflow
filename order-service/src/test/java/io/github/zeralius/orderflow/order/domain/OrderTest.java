@@ -12,7 +12,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 class OrderTest {
 
   private static Order newOrder() {
-    return Order.place("alice", List.of(new OrderLine("MUG-COFFEE", 1)));
+    return Order.place("alice", "alice@example.com", List.of(new OrderLine("MUG-COFFEE", 1)));
   }
 
   @Test
@@ -50,7 +50,7 @@ class OrderTest {
 
   @Test
   void needsAtLeastOneLine() {
-    assertThatThrownBy(() -> Order.place("alice", List.of()))
+    assertThatThrownBy(() -> Order.place("alice", "alice@example.com", List.of()))
         .isInstanceOf(IllegalArgumentException.class);
   }
 

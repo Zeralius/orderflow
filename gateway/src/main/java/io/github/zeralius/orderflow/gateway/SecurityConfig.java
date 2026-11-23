@@ -21,6 +21,9 @@ class SecurityConfig {
             requests
                 .requestMatchers(HttpMethod.GET, "/api/products", "/api/products/**")
                 .permitAll()
+                // API documentation and Swagger UI are public; the calls they make are not
+                .requestMatchers("/docs/**", "/swagger-ui.html", "/swagger-ui/**")
+                .permitAll()
                 .requestMatchers("/api/**")
                 .authenticated()
                 .anyRequest()

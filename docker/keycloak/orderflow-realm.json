@@ -7,8 +7,14 @@
   "registrationAllowed": false,
   "roles": {
     "realm": [
-      { "name": "customer", "description": "Places orders and sees their own" },
-      { "name": "admin", "description": "Sees all orders and payments, controls the payment demo switch" }
+      {
+        "name": "customer",
+        "description": "Places orders and sees their own"
+      },
+      {
+        "name": "admin",
+        "description": "Sees all orders and payments, controls the payment demo switch"
+      }
     ]
   },
   "clients": [
@@ -19,9 +25,16 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://localhost:*"],
-      "webOrigins": ["+"],
-      "attributes": { "pkce.code.challenge.method": "S256" },
+      "redirectUris": [
+        "http://localhost:*"
+      ],
+      "webOrigins": [
+        "+",
+        "http://localhost:8080"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
       "protocolMappers": [
         {
           "name": "audience orderflow-api",
@@ -44,8 +57,16 @@
       "emailVerified": true,
       "firstName": "Alice",
       "lastName": "Demo",
-      "credentials": [{ "type": "password", "value": "alice", "temporary": false }],
-      "realmRoles": ["customer"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "customer"
+      ]
     },
     {
       "username": "bob",
@@ -54,8 +75,16 @@
       "emailVerified": true,
       "firstName": "Bob",
       "lastName": "Demo",
-      "credentials": [{ "type": "password", "value": "bob", "temporary": false }],
-      "realmRoles": ["customer"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "bob",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "customer"
+      ]
     },
     {
       "username": "carol",
@@ -64,8 +93,16 @@
       "emailVerified": true,
       "firstName": "Carol",
       "lastName": "Demo",
-      "credentials": [{ "type": "password", "value": "carol", "temporary": false }],
-      "realmRoles": ["customer"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "carol",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "customer"
+      ]
     },
     {
       "username": "admin",
@@ -74,8 +111,17 @@
       "emailVerified": true,
       "firstName": "Ada",
       "lastName": "Admin",
-      "credentials": [{ "type": "password", "value": "admin", "temporary": false }],
-      "realmRoles": ["admin", "customer"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "admin",
+        "customer"
+      ]
     }
   ]
 }

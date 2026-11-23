@@ -4,7 +4,7 @@
 
 An event-driven online-shop backend: Spring Boot microservices that talk over Apache Kafka. One order runs as a **saga** across the services, and every failure path (out of stock, payment declined) is handled and undone where needed.
 
-> Status: **secured**. The saga runs across three services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Everything sits behind an API gateway, and users log in through Keycloak: customers only see their own orders, and admin-only actions need the admin role. An end-to-end test runs the real Docker images with real logins. Next: notifications, rate limiting, API docs (see [Roadmap](#roadmap)).
+> Status: **feature-complete core**. The saga runs across the services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Customers get an email when their order is confirmed or cancelled. Everything sits behind a rate-limited API gateway with one Swagger UI for all APIs, and users log in through Keycloak. ArchUnit rules enforce the architecture in every build, and an end-to-end test runs the real Docker images with real logins and real email. Next: observability (see [Roadmap](#roadmap)).
 
 ## Architecture
 
@@ -19,7 +19,8 @@ flowchart LR
     inventory -->|inventory.replies| order
     order -->|payment.commands| payment[payment-service]
     payment -->|payment.replies| order
-    order -->|order.events| consumers([future: notifications, analytics])
+    order -->|order.events| notification[notification-service]
+    notification -->|SMTP| mail([Mailpit / mail server])
     order --- odb[(orders DB)]
     inventory --- idb[(inventory DB)]
     payment --- pdb[(payments DB)]
@@ -29,11 +30,13 @@ flowchart LR
 |---|---|---|
 | `common` | – | Message contracts: topics and the commands, replies and events (Java records, sealed interfaces) |
 | `messaging` | – | Reliable messaging as Spring Boot auto-configuration: outbox, inbox, retries, dead letters |
-| `security` | – | Shared OAuth2 setup: Keycloak roles to Spring Security, common API defaults |
-| `gateway` | 8080 | The single entry point: checks the token, routes `/api/**` to the services |
+| `security` | – | Shared OAuth2 setup: Keycloak roles to Spring Security, common API defaults, the OpenAPI frame |
+| `architecture-rules` | – | ArchUnit rules every service checks in its build |
+| `gateway` | 8080 | The single entry point: checks the token, limits the request rate, routes `/api/**` to the services, serves Swagger UI |
 | `order-service` | 8081 | REST API, order state machine, runs the saga |
 | `inventory-service` | 8082 | Catalogue, prices and stock; reserves all-or-nothing, releases on request |
 | `payment-service` | 8083 | Fake payment provider: declines above a limit, or everything via a demo switch |
+| `notification-service` | 8084 | Emails the customer when an order is confirmed or cancelled (no public API) |
 | `e2e-tests` | – | Black-box tests: the whole system as Docker containers, with real Keycloak logins, talking only HTTP to the gateway |
 
 Each service owns its own database. They share nothing but the messages in `common`.
@@ -79,6 +82,27 @@ Every token is checked **twice**: by the gateway, and again by the service it re
 | `GET /api/orders/{id}` | the order's own customer, or an admin. Anyone else gets 404, so order ids can't be probed |
 | `GET /api/payments/{orderId}`, `/api/admin/**` | admin |
 | no or invalid token | 401, stopped at the gateway |
+| more than 120 requests a minute | 429 Too Many Requests: per user (anonymous callers per IP), across all routes |
+
+## Notifications
+
+`notification-service` listens to `order.events` and emails the customer: "confirmed" with the total, or "cancelled" with the reason. The address comes from the customer's login token: order-service stores it with the order and puts it in the event, so the notification service needs no customer database. Locally every email lands in **Mailpit** (http://localhost:8025).
+
+The service uses the same reliable messaging as the others: an inbox against duplicates, retries, then the dead-letter topic. Every decision is logged in a `notifications` table (`SENT`, or `SKIPPED` when an account has no address).
+
+## Architecture rules
+
+`architecture-rules` holds [ArchUnit](https://www.archunit.org/) rules that every service checks against its own code in every build, so these promises can't quietly erode:
+
+- **Messages leave only through the outbox.** Nothing outside the messaging library touches `KafkaTemplate` or a Kafka producer.
+- **Kafka listeners are `@Transactional`.** The inbox only works if its entry commits together with the work.
+- **REST endpoints return DTOs, never JPA entities.**
+- **The domain model knows nothing about HTTP, Kafka, the saga or the API layer.**
+- **Nothing calls into controllers.**
+- **No field injection.**
+- **No cycles between packages.**
+
+A rule that never fails proves nothing, so the module's own tests feed each key rule a deliberately broken class and expect it to fail.
 
 ## The saga
 
@@ -114,7 +138,7 @@ Order states: `PENDING → STOCK_RESERVED → CONFIRMED`, or `PENDING → CANCEL
 
 ## Tech stack
 
-Java 25 (records, sealed interfaces, pattern-matching `switch`) · Spring Boot 4.2 · Spring Security 7 (OAuth2 resource server) · Keycloak 26 · Spring Cloud Gateway (Server WebMVC) · Spring for Apache Kafka · Maven (multi-module, wrapper) · Apache Kafka 4.4 (KRaft) · PostgreSQL 18 · Flyway · Spring Data JPA / Hibernate · Bean Validation · RFC 9457 Problem Details · Testcontainers · JUnit 5 · AssertJ · Spotless · JaCoCo · Docker Compose · GitHub Actions
+Java 25 (records, sealed interfaces, pattern-matching `switch`) · Spring Boot 4.2 · Spring Security 7 (OAuth2 resource server) · Keycloak 26 · Spring Cloud Gateway (Server WebMVC) · Bucket4j · springdoc-openapi / Swagger UI · Spring Mail + Mailpit · ArchUnit · Spring for Apache Kafka · Maven (multi-module, wrapper) · Apache Kafka 4.4 (KRaft) · PostgreSQL 18 · Flyway · Spring Data JPA / Hibernate · Bean Validation · RFC 9457 Problem Details · Testcontainers · JUnit 5 · AssertJ · Spotless · JaCoCo · Docker Compose · GitHub Actions
 
 ## Run it locally
 
@@ -127,7 +151,17 @@ Requirements: JDK 25 and Docker.
 docker compose --profile apps up -d --build
 ```
 
-The gateway is on http://localhost:8080, Keycloak on http://localhost:8180 (its admin console login is `admin` / `admin`), and Kafka UI on http://localhost:8090. The services themselves listen on 8081-8083, and PostgreSQL on 5433.
+| What | Where |
+|---|---|
+| Gateway (the API) | http://localhost:8080 |
+| **Swagger UI**, all APIs (click *Authorize* and log in, e.g. `alice` / `alice`) | http://localhost:8080/swagger-ui.html |
+| Mailpit, every email sent | http://localhost:8025 |
+| Keycloak (admin console login `admin` / `admin`) | http://localhost:8180 |
+| Kafka UI | http://localhost:8090 |
+| The services themselves | 8081-8084 |
+| PostgreSQL | localhost:5433 |
+
+Upgrading from an older checkout whose PostgreSQL volume already exists? Create the database the notification service needs: `docker compose exec postgres createdb -U orderflow notifications`. Or start fresh with `docker compose down -v`.
 
 **Or the services from your IDE / terminal**, with only the infrastructure in Docker:
 
@@ -136,6 +170,7 @@ docker compose up -d
 java -jar order-service/target/order-service-0.1.0-SNAPSHOT.jar
 java -jar inventory-service/target/inventory-service-0.1.0-SNAPSHOT.jar
 java -jar payment-service/target/payment-service-0.1.0-SNAPSHOT.jar
+java -jar notification-service/target/notification-service-0.1.0-SNAPSHOT.jar
 java -jar gateway/target/gateway-0.1.0-SNAPSHOT.jar
 ```
 
@@ -176,17 +211,18 @@ More to look at:
 - `GET localhost:8080/api/orders`: your own orders
 - `GET localhost:8080/api/payments/<orderId>` as `admin`: the payment attempt for an order
 - `PUT localhost:8080/api/admin/payment-mode` as `admin`, with `{"declineAll": true}`: makes every payment fail (403 for customers)
+- http://localhost:8025: the confirmation and cancellation emails alice, bob and carol just got
 - Kafka UI at http://localhost:8090: every command, reply and event on its topic, with its `orderflow-message-id` header; failed messages on the `.dlt` topics
 - The tables `outbox_messages` and `processed_messages` in each database (`psql -h localhost -p 5433 -U orderflow orders`)
 
 ## Build and test
 
 ```bash
-./mvnw verify          # format check, compile, all tests incl. end-to-end, coverage (about 3-4 minutes)
+./mvnw verify          # format check, compile, all tests incl. architecture and end-to-end, coverage (about 5 minutes)
 ./mvnw spotless:apply  # fix formatting
 ```
 
-70 tests in total:
+118 tests in total:
 
 - **Message contracts** (`common`): every message survives a JSON round trip with its type name.
 - **Order state machine:** unit tests for the allowed and refused moves.
@@ -206,8 +242,12 @@ More to look at:
   - customers can't see each other's orders, admins see all
   - the order list shows only your own orders
   - only admins can use the payment switch
+- **Notifications** (against a real Mailpit): confirmation and cancellation emails, one email for a redelivered event, nothing sent without an address.
+- **Architecture:** 7 ArchUnit rules in every service, plus proof that the key rules catch broken code.
 - **Gateway:**
   - routing with `/api` stripped
+  - rate limiting: 429 after the limit, per user and across routes
+  - docs routes and Swagger UI
   - no token stops at the gateway
   - unknown paths are denied
   - Location headers get their `/api` back
@@ -216,6 +256,8 @@ More to look at:
   - all three order outcomes, including the stock coming back after a declined payment
   - 401 without a token, 404 for someone else's order, 403 on the payment switch for customers
   - a Location header that works
+  - the confirmation and cancellation emails in Mailpit
+  - Swagger UI and every service's API description through the gateway
 
 Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per module ends up in `<module>/target/site/jacoco/index.html`.
 
@@ -249,6 +291,16 @@ Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per 
 
 **The audience is checked too.** Tokens must be issued for `orderflow-api` (a Keycloak audience mapper adds it). A token from the same Keycloak that was meant for another application doesn't work here.
 
+**The event carries what its consumers need.** The customer's email address travels in `OrderConfirmed` and `OrderCancelled`, taken from the login token when the order was placed. The alternative, notification-service looking addresses up in Keycloak, would couple it to the identity provider and fail whenever Keycloak is down. The cost is a little personal data in the event stream.
+
+**Email is at least once.** Sending mail can't be part of a database transaction. If the mail went out but the commit then failed, the retry sends it again. For order emails, a rare duplicate is better than a lost one.
+
+**Rate limits live in the gateway, in memory.** Bucket4j token buckets per user, in a Caffeine cache. That is right for one gateway instance; several instances would each count separately, and the buckets would move to Redis (Bucket4j has a Redis backend with the same interface).
+
+**One Swagger UI, logged in through Keycloak.** Each service describes its own API (springdoc). The gateway collects the descriptions under `/docs/*` and serves one Swagger UI. The "Authorize" button runs a real Keycloak login (authorization code with PKCE), so "Try it out" calls the secured endpoints through the gateway.
+
+**Architecture rules, chosen on purpose.** Each ArchUnit rule protects a promise the code actually relies on, such as the outbox or the transactional listeners. A popular rule is deliberately missing: "controllers never touch repositories". Here, simple reads (`GET /orders/{id}`) go straight to the repository, and every change goes through the saga or a service. Forcing a pass-through service in between would add code without adding safety.
+
 **Error pages pass security, and a down service is a 503.** Spring Security also guards the error page. With a "deny everything else" rule, a service that was down reached the client as a misleading 403. The shared security defaults now let error dispatches through, and the gateway answers an unreachable service with an explicit 503 Problem Detail.
 
 ## Roadmap
@@ -257,7 +309,7 @@ Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per 
 - [x] MVP: message contracts, order API + state machine, inventory, payment, orchestrated saga with compensation, Testcontainers tests
 - [x] Reliability: transactional outbox, idempotent consumers (inbox), retries + dead-letter topics, end-to-end tests against the Docker images
 - [x] Security & edge: Keycloak (OAuth2/JWT, roles, audience), Spring Cloud Gateway, ownership checks, end-to-end with real logins
-- [ ] Edge polish: notification-service, rate limiting at the gateway, OpenAPI docs, ArchUnit rules
+- [x] Edge polish: notification-service with Mailpit, rate limiting at the gateway, OpenAPI + one Swagger UI with Keycloak login, ArchUnit rules
 - [ ] Observability: Micrometer, Prometheus, Grafana, OpenTelemetry tracing
 - [ ] Kubernetes (Helm), cloud deployment, Spring AI order-support assistant
 

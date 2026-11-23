@@ -1,8 +1,9 @@
 # Local infrastructure for OrderFlow: `docker compose up -d`
 # Whole system incl. the services and the gateway (http://localhost:8080): `./mvnw package -DskipTests && docker compose --profile apps up -d --build`
-#   PostgreSQL  localhost:5433  (databases: orders, inventory, payments; user/password: orderflow, local dev only)
+#   PostgreSQL  localhost:5433  (databases: orders, inventory, payments, notifications; user/password: orderflow, local dev only)
 #   Kafka       localhost:9092  (KRaft, single node, no ZooKeeper)
 #   Kafka UI    http://localhost:8090
+#   Mailpit     http://localhost:8025  (catches all outgoing email)
 #   Keycloak    http://localhost:8180  (realm orderflow; demo users alice/alice, bob/bob, carol/carol, admin/admin; console admin/admin)
 services:
   postgres:
@@ -64,6 +65,12 @@ services:
       timeout: 5s
       retries: 20
 
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web UI: every email the system sends
+
   kafka-ui:
     image: kafbat/kafka-ui:v1.5.1
     ports:
@@ -73,8 +80,6 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
     depends_on:
       kafka:
-        condition: service_healthy
-      keycloak:
         condition: service_healthy
 
   order-service:
@@ -127,6 +132,24 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+
+  notification-service:
+    profiles: [apps]
+    build: ./notification-service
+    ports:
+      - "8084:8084"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/notifications
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
 
   gateway:
     profiles: [apps]

@@ -60,7 +60,8 @@ class OrderApiSecurityTest {
 
   @Test
   void customersCannotSeeEachOthersOrders() {
-    Order order = saga.placeOrder("grace", List.of(new OrderLine("MUG-COFFEE", 1)));
+    Order order =
+        saga.placeOrder("grace", "grace@example.com", List.of(new OrderLine("MUG-COFFEE", 1)));
 
     assertThat(mvc.get().uri("/orders/{id}", order.getId()).with(customer("grace")).exchange())
         .hasStatus(HttpStatus.OK);
@@ -71,7 +72,8 @@ class OrderApiSecurityTest {
 
   @Test
   void adminsSeeEveryOrder() {
-    Order order = saga.placeOrder("ivan", List.of(new OrderLine("MUG-COFFEE", 1)));
+    Order order =
+        saga.placeOrder("ivan", "ivan@example.com", List.of(new OrderLine("MUG-COFFEE", 1)));
 
     assertThat(mvc.get().uri("/orders/{id}", order.getId()).with(admin("ops")).exchange())
         .hasStatus(HttpStatus.OK);
@@ -79,9 +81,9 @@ class OrderApiSecurityTest {
 
   @Test
   void theListShowsOnlyTheCallersOrders() {
-    saga.placeOrder("judy", List.of(new OrderLine("MUG-COFFEE", 1)));
-    saga.placeOrder("judy", List.of(new OrderLine("BOOK-JAVA25", 1)));
-    saga.placeOrder("ken", List.of(new OrderLine("MUG-COFFEE", 1)));
+    saga.placeOrder("judy", "judy@example.com", List.of(new OrderLine("MUG-COFFEE", 1)));
+    saga.placeOrder("judy", "judy@example.com", List.of(new OrderLine("BOOK-JAVA25", 1)));
+    saga.placeOrder("ken", "ken@example.com", List.of(new OrderLine("MUG-COFFEE", 1)));
 
     assertThat(mvc.get().uri("/orders").with(customer("judy")).exchange())
         .hasStatus(HttpStatus.OK)

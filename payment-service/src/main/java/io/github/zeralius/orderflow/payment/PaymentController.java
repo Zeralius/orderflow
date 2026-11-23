@@ -1,5 +1,7 @@
 package io.github.zeralius.orderflow.payment;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
@@ -11,6 +13,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+@Tag(
+    name = "Payments",
+    description = "Payment attempts and the fake provider's demo switch. Admins only.")
 @RestController
 class PaymentController {
 
@@ -23,6 +28,7 @@ class PaymentController {
   }
 
   @GetMapping("/payments/{orderId}")
+  @Operation(summary = "The payment attempt for an order")
   PaymentView byOrder(@PathVariable UUID orderId) {
     return payments
         .findByOrderId(orderId)
@@ -33,11 +39,13 @@ class PaymentController {
 
   /** Demo switch: admin only (see SecurityConfig). */
   @GetMapping("/admin/payment-mode")
+  @Operation(summary = "Current demo switch settings")
   PaymentMode mode() {
     return new PaymentMode(provider.isDeclineAll(), provider.getDeclineAbove());
   }
 
   @PutMapping("/admin/payment-mode")
+  @Operation(summary = "Make the fake provider decline every payment (or stop doing so)")
   PaymentMode setMode(@RequestBody PaymentMode mode) {
     provider.setDeclineAll(mode.declineAll());
     return mode();

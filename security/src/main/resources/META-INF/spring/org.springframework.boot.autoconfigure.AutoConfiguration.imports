@@ -1,1 +1,2 @@
 io.github.zeralius.orderflow.security.OrderFlowSecurityAutoConfiguration
+io.github.zeralius.orderflow.security.OrderFlowOpenApiAutoConfiguration

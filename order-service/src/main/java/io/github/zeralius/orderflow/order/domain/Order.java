@@ -27,6 +27,9 @@ public class Order {
 
   private String customerId;
 
+  /** From the login token, for notifications. May be null. */
+  private String customerEmail;
+
   @Enumerated(EnumType.STRING)
   private OrderStatus status;
 
@@ -48,7 +51,7 @@ public class Order {
 
   protected Order() {}
 
-  public static Order place(String customerId, List<OrderLine> lines) {
+  public static Order place(String customerId, String customerEmail, List<OrderLine> lines) {
     Objects.requireNonNull(customerId, "customerId");
     if (lines == null || lines.isEmpty()) {
       throw new IllegalArgumentException("An order needs at least one line");
@@ -56,6 +59,7 @@ public class Order {
     var order = new Order();
     order.id = UUID.randomUUID();
     order.customerId = customerId;
+    order.customerEmail = customerEmail;
     order.lines.addAll(lines);
     order.status = OrderStatus.PENDING;
     order.createdAt = Instant.now();
@@ -101,6 +105,10 @@ public class Order {
 
   public String getCustomerId() {
     return customerId;
+  }
+
+  public String getCustomerEmail() {
+    return customerEmail;
   }
 
   public OrderStatus getStatus() {

@@ -6,6 +6,8 @@ import io.github.zeralius.orderflow.order.domain.OrderRepository;
 import io.github.zeralius.orderflow.order.domain.OrderStatus;
 import io.github.zeralius.orderflow.order.saga.OrderSaga;
 import io.github.zeralius.orderflow.security.ApiSecurity;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
@@ -19,6 +21,7 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -32,6 +35,10 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
  * The customer is whoever the token says: the request body has no customer field to fake. Customers
  * see only their own orders; admins see all of them.
  */
+@Tag(
+    name = "Orders",
+    description =
+        "Place orders and follow them. Customers see their own orders, admins all of them.")
 @RestController
 @RequestMapping("/orders")
 class OrderController {
@@ -49,11 +56,12 @@ class OrderController {
    * follow the Location header to see how it ended.
    */
   @PostMapping
+  @Operation(summary = "Place an order (answers 202; follow the Location header)")
   ResponseEntity<OrderResponse> place(
       @Valid @RequestBody PlaceOrderRequest request, Authentication caller) {
     List<OrderLine> lines =
         request.lines().stream().map(line -> new OrderLine(line.sku(), line.quantity())).toList();
-    Order order = saga.placeOrder(caller.getName(), lines);
+    Order order = saga.placeOrder(caller.getName(), emailOf(caller), lines);
     // Built from the incoming request, so behind the gateway it points at the gateway's URL
     var location =
         ServletUriComponentsBuilder.fromCurrentRequestUri()
@@ -65,6 +73,7 @@ class OrderController {
 
   /** The caller's own orders, newest first. */
   @GetMapping
+  @Operation(summary = "Your own orders, newest first")
   List<OrderResponse> mine(Authentication caller) {
     return orders.findByCustomerIdOrderByCreatedAtDesc(caller.getName()).stream()
         .map(OrderResponse::from)
@@ -73,12 +82,19 @@ class OrderController {
 
   /** Someone else's order looks exactly like a missing one: 404, so ids can't be probed. */
   @GetMapping("/{id}")
+  @Operation(summary = "One order: yours, or any order for admins")
   OrderResponse get(@PathVariable UUID id, Authentication caller) {
     return orders
         .findById(id)
         .filter(order -> isAdmin(caller) || order.getCustomerId().equals(caller.getName()))
         .map(OrderResponse::from)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No order " + id));
+  }
+
+  private static String emailOf(Authentication caller) {
+    return caller instanceof JwtAuthenticationToken token
+        ? token.getToken().getClaimAsString("email")
+        : null;
   }
 
   private static boolean isAdmin(Authentication caller) {

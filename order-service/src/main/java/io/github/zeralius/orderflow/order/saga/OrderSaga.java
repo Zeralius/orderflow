@@ -57,8 +57,8 @@ public class OrderSaga {
   }
 
   @Transactional
-  public Order placeOrder(String customerId, List<OrderLine> lines) {
-    Order order = orders.save(Order.place(customerId, lines));
+  public Order placeOrder(String customerId, String customerEmail, List<OrderLine> lines) {
+    Order order = orders.save(Order.place(customerId, customerEmail, lines));
     List<StockLine> stockLines =
         lines.stream().map(line -> new StockLine(line.sku(), line.quantity())).toList();
     outbox.add(
@@ -106,7 +106,8 @@ public class OrderSaga {
         outbox.add(
             Topics.ORDER_EVENTS,
             order.getId(),
-            new OrderConfirmed(order.getId(), order.getCustomerId(), order.getTotal()));
+            new OrderConfirmed(
+                order.getId(), order.getCustomerId(), order.getCustomerEmail(), order.getTotal()));
         log.info("Order {} confirmed", order.getId());
       }
       case PaymentFailed failed when order.getStatus() == STOCK_RESERVED -> {
@@ -130,7 +131,11 @@ public class OrderSaga {
     outbox.add(
         Topics.ORDER_EVENTS,
         order.getId(),
-        new OrderCancelled(order.getId(), order.getCustomerId(), order.getFailureReason()));
+        new OrderCancelled(
+            order.getId(),
+            order.getCustomerId(),
+            order.getCustomerEmail(),
+            order.getFailureReason()));
     log.info("Order {} cancelled: {}", order.getId(), order.getFailureReason());
   }
 
