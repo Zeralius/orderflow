@@ -32,6 +32,12 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway-server-webmvc</artifactId>
         </dependency>
+        <!-- Forwards requests with Apache HttpClient (Spring Boot picks it up when present) instead of
+             the JDK client, whose HTTP/1.1 code threw an internal NullPointerException now and then -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
         <!-- Swagger UI for all services' APIs in one place -->
         <dependency>
             <groupId>org.springdoc</groupId>
