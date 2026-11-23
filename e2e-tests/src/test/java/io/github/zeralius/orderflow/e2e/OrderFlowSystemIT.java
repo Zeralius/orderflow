@@ -14,6 +14,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -57,6 +60,7 @@ class OrderFlowSystemIT {
   private static KafkaContainer kafka;
   private static GenericContainer<?> keycloak;
   private static GenericContainer<?> mailpit;
+  private static GenericContainer<?> jaeger;
   private static GenericContainer<?> orderService;
   private static GenericContainer<?> inventoryService;
   private static GenericContainer<?> paymentService;
@@ -103,7 +107,13 @@ class OrderFlowSystemIT {
             .withNetworkAliases("mailpit")
             .withExposedPorts(8025)
             .waitingFor(Wait.forHttp("/api/v1/info").forPort(8025));
-    Startables.deepStart(postgres, kafka, keycloak, mailpit).join();
+    jaeger =
+        new GenericContainer<>(DockerImageName.parse("jaegertracing/jaeger:2.23.0"))
+            .withNetwork(network)
+            .withNetworkAliases("jaeger")
+            .withExposedPorts(16686)
+            .waitingFor(Wait.forHttp("/").forPort(16686));
+    Startables.deepStart(postgres, kafka, keycloak, mailpit, jaeger).join();
 
     orderService = service("order-service", 8081, Map.of("DB_URL", jdbc("orders")));
     inventoryService = service("inventory-service", 8082, Map.of("DB_URL", jdbc("inventory")));
@@ -138,6 +148,7 @@ class OrderFlowSystemIT {
           paymentService,
           notificationService,
           mailpit,
+          jaeger,
           keycloak,
           kafka,
           postgres
@@ -192,6 +203,24 @@ class OrderFlowSystemIT {
     Map<String, Object> mail = awaitMail("carol@example.com", order.id());
     assertThat(mail.get("Subject")).isEqualTo("Your OrderFlow order was cancelled");
     assertThat((String) mail.get("Snippet")).contains("exceeds the limit");
+  }
+
+  // --- Tracing ---
+
+  @Test
+  void oneOrderIsOneTraceAcrossEveryService() throws Exception {
+    OrderView order = placeAndAwait(login("alice"), "LAPTOP-STAND", 1);
+    assertThat(order.status()).isEqualTo("CONFIRMED");
+
+    // gateway -> order-service -> Kafka -> inventory -> payment -> notification, through outboxes
+    Set<String> everyService =
+        Set.of(
+            "gateway",
+            "order-service",
+            "inventory-service",
+            "payment-service",
+            "notification-service");
+    assertThat(awaitTraceSpanning(everyService)).containsAll(everyService);
   }
 
   // --- API docs ---
@@ -264,6 +293,8 @@ class OrderFlowSystemIT {
         .withEnv("KAFKA_BOOTSTRAP_SERVERS", "kafka:19092")
         .withEnv("OIDC_ISSUER", ISSUER)
         .withEnv("OIDC_JWKS", ISSUER + "/protocol/openid-connect/certs")
+        .withEnv(
+            "MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT", "http://jaeger:4318/v1/traces")
         .withLogConsumer(new Slf4jLogConsumer(LoggerFactory.getLogger(name)))
         .waitingFor(
             Wait.forHttp("/actuator/health")
@@ -295,6 +326,75 @@ class OrderFlowSystemIT {
       Thread.sleep(300);
     }
     throw new AssertionError("No mail to " + address + " about order " + orderId);
+  }
+
+  /**
+   * Waits until Jaeger has a trace that includes every one of {@code services}; returns the
+   * services of the widest trace seen. Spans arrive in batches, so this polls.
+   */
+  @SuppressWarnings("unchecked")
+  private static Set<String> awaitTraceSpanning(Set<String> services) throws Exception {
+    Set<String> widest = Set.of();
+    long deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+    while (System.nanoTime() < deadline) {
+      // Jaeger v2's query API (v3) answers in OpenTelemetry's own format: resourceSpans
+      URI search =
+          URI.create(
+              "http://%s:%d/api/v3/traces?query.service_name=order-service&query.num_traces=100"
+                      .formatted(jaeger.getHost(), jaeger.getMappedPort(16686))
+                  + "&query.start_time_min="
+                  + URLEncoder.encode(
+                      Instant.now().minus(Duration.ofHours(1)).toString(), StandardCharsets.UTF_8)
+                  + "&query.start_time_max="
+                  + URLEncoder.encode(
+                      Instant.now().plusSeconds(60).toString(), StandardCharsets.UTF_8));
+      HttpResponse<String> response =
+          http.send(HttpRequest.newBuilder(search).build(), HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() == 200) {
+        for (Set<String> inTrace : servicesPerTrace(response.body()).values()) {
+          if (inTrace.containsAll(services)) {
+            return inTrace;
+          }
+          if (inTrace.size() > widest.size()) {
+            widest = inTrace;
+          }
+        }
+      }
+      Thread.sleep(1000);
+    }
+    return widest;
+  }
+
+  /** trace id -> the services that have spans in it. */
+  @SuppressWarnings("unchecked")
+  private static Map<String, Set<String>> servicesPerTrace(String otlpJson) {
+    Map<String, Set<String>> services = new HashMap<>();
+    var result = (Map<String, Object>) json.readValue(otlpJson, Map.class).get("result");
+    var resourceSpans =
+        result == null
+            ? List.<Map<String, Object>>of()
+            : (List<Map<String, Object>>) result.get("resourceSpans");
+    for (Map<String, Object> resourceSpan : resourceSpans) {
+      var resource = (Map<String, Object>) resourceSpan.get("resource");
+      String service =
+          ((List<Map<String, Object>>) resource.get("attributes"))
+              .stream()
+                  .filter(attribute -> "service.name".equals(attribute.get("key")))
+                  .map(attribute ->
+                      ((Map<String, Object>) attribute.get("value")).get("stringValue"))
+                  .map(String::valueOf)
+                  .findFirst()
+                  .orElse("?");
+      for (Map<String, Object> scopeSpan :
+          (List<Map<String, Object>>) resourceSpan.get("scopeSpans")) {
+        for (Map<String, Object> span : (List<Map<String, Object>>) scopeSpan.get("spans")) {
+          services
+              .computeIfAbsent(String.valueOf(span.get("traceId")), id -> new HashSet<>())
+              .add(service);
+        }
+      }
+    }
+    return services;
   }
 
   private static String jdbc(String database) {

@@ -2,6 +2,9 @@ server:
   port: 8084
 
 spring:
+  config:
+    # Metrics, tracing and their settings, shared by all services
+    import: classpath:orderflow-observability.yml
   application:
     name: notification-service
   datasource:
@@ -22,8 +25,3 @@ orderflow:
   notification:
     from: "OrderFlow <orders@orderflow.local>"
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics

@@ -4,7 +4,7 @@
 
 An event-driven online-shop backend: Spring Boot microservices that talk over Apache Kafka. One order runs as a **saga** across the services, and every failure path (out of stock, payment declined) is handled and undone where needed.
 
-> Status: **feature-complete core**. The saga runs across the services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Customers get an email when their order is confirmed or cancelled. Everything sits behind a rate-limited API gateway with one Swagger UI for all APIs, and users log in through Keycloak. ArchUnit rules enforce the architecture in every build, and an end-to-end test runs the real Docker images with real logins and real email. Next: observability (see [Roadmap](#roadmap)).
+> Status: **feature-complete core**. The saga runs across the services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Customers get an email when their order is confirmed or cancelled. Everything sits behind a rate-limited API gateway with one Swagger UI for all APIs, and users log in through Keycloak. ArchUnit rules enforce the architecture in every build. Every service reports metrics to Prometheus (with a Grafana dashboard), and one order is one trace across all services, even through Kafka and the outbox. An end-to-end test runs the real Docker images with real logins, real email and real traces. Next: Kubernetes and a cloud deployment (see [Roadmap](#roadmap)).
 
 ## Architecture
 
@@ -31,6 +31,7 @@ flowchart LR
 | `common` | – | Message contracts: topics and the commands, replies and events (Java records, sealed interfaces) |
 | `messaging` | – | Reliable messaging as Spring Boot auto-configuration: outbox, inbox, retries, dead letters |
 | `security` | – | Shared OAuth2 setup: Keycloak roles to Spring Security, common API defaults, the OpenAPI frame |
+| `observability` | – | One dependency for metrics (Prometheus) and tracing (OpenTelemetry, OTLP), plus shared settings |
 | `architecture-rules` | – | ArchUnit rules every service checks in its build |
 | `gateway` | 8080 | The single entry point: checks the token, limits the request rate, routes `/api/**` to the services, serves Swagger UI |
 | `order-service` | 8081 | REST API, order state machine, runs the saga |
@@ -90,6 +91,32 @@ Every token is checked **twice**: by the gateway, and again by the service it re
 
 The service uses the same reliable messaging as the others: an inbox against duplicates, retries, then the dead-letter topic. Every decision is logged in a `notifications` table (`SENT`, or `SKIPPED` when an account has no address).
 
+## Observability
+
+**Metrics.** Every service serves `/actuator/prometheus`. Prometheus scrapes them, and Grafana shows the **OrderFlow overview** dashboard (http://localhost:3000, it opens directly):
+
+| Metric | What it tells you |
+|---|---|
+| `orderflow_orders_placed_total` | Orders accepted by the API |
+| `orderflow_orders_completed_seconds` (by `outcome`) | How orders end (confirmed / cancelled) and how long the whole saga took (p50/p95) |
+| `orderflow_outbox_pending` (per service) | Messages written but not yet sent; should stay near 0, growing means Kafka is unreachable |
+| `orderflow_outbox_sent_total` (by `topic`) | Messages delivered to Kafka |
+| `orderflow_inbox_duplicates_total` | Redeliveries the inbox recognised and skipped |
+| `orderflow_messages_dead_lettered_total` | Messages parked on a `.dlt` topic; any of these deserves a look |
+| `orderflow_notifications_total` (by `kind`, `status`) | Emails sent or skipped |
+| `http_server_requests_seconds` | Requests, latency percentiles and status codes per service (401/429/503 at the gateway) |
+
+**Traces.** Every service sends its spans to Jaeger (http://localhost:16686) over OTLP. One order is **one trace** from the gateway to the last email, 34 spans across five services in a typical run, about 1.2 s end to end, even though it crosses Kafka several times:
+
+```mermaid
+flowchart LR
+    gw[gateway<br/>HTTP] --> os[order-service<br/>HTTP, saga] --> ob1[(outbox)] -.relay.-> k1{{Kafka}} --> inv[inventory-service] --> ob2[(outbox)] -.relay.-> k2{{Kafka}} --> os2[order-service] --> ob3[(outbox)] -.relay.-> k3{{Kafka}} --> pay[payment-service] --> more[... order.events] --> notif[notification-service]
+```
+
+This needs one piece of plumbing. A message is written in the request's thread but sent later by the outbox relay, on another thread, where the trace would normally be lost. So the outbox stores the trace context (`traceparent`) with each row, and the relay continues that trace when it sends the row. The relay's 200 ms polling is kept out of tracing on purpose, or Jaeger would fill up with empty polls. Trace and span ids also appear in every log line.
+
+To trace services started from the IDE, set `MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT=http://localhost:4318/v1/traces`. Without that variable nothing is exported.
+
 ## Architecture rules
 
 `architecture-rules` holds [ArchUnit](https://www.archunit.org/) rules that every service checks against its own code in every build, so these promises can't quietly erode:
@@ -138,7 +165,7 @@ Order states: `PENDING → STOCK_RESERVED → CONFIRMED`, or `PENDING → CANCEL
 
 ## Tech stack
 
-Java 25 (records, sealed interfaces, pattern-matching `switch`) · Spring Boot 4.2 · Spring Security 7 (OAuth2 resource server) · Keycloak 26 · Spring Cloud Gateway (Server WebMVC) · Bucket4j · springdoc-openapi / Swagger UI · Spring Mail + Mailpit · ArchUnit · Spring for Apache Kafka · Maven (multi-module, wrapper) · Apache Kafka 4.4 (KRaft) · PostgreSQL 18 · Flyway · Spring Data JPA / Hibernate · Bean Validation · RFC 9457 Problem Details · Testcontainers · JUnit 5 · AssertJ · Spotless · JaCoCo · Docker Compose · GitHub Actions
+Java 25 (records, sealed interfaces, pattern-matching `switch`) · Spring Boot 4.2 · Micrometer + Prometheus + Grafana · OpenTelemetry (OTLP) + Jaeger · Spring Security 7 (OAuth2 resource server) · Keycloak 26 · Spring Cloud Gateway (Server WebMVC) · Bucket4j · springdoc-openapi / Swagger UI · Spring Mail + Mailpit · ArchUnit · Spring for Apache Kafka · Maven (multi-module, wrapper) · Apache Kafka 4.4 (KRaft) · PostgreSQL 18 · Flyway · Spring Data JPA / Hibernate · Bean Validation · RFC 9457 Problem Details · Testcontainers · JUnit 5 · AssertJ · Spotless · JaCoCo · Docker Compose · GitHub Actions
 
 ## Run it locally
 
@@ -156,6 +183,9 @@ docker compose --profile apps up -d --build
 | Gateway (the API) | http://localhost:8080 |
 | **Swagger UI**, all APIs (click *Authorize* and log in, e.g. `alice` / `alice`) | http://localhost:8080/swagger-ui.html |
 | Mailpit, every email sent | http://localhost:8025 |
+| **Grafana**, the OrderFlow dashboard | http://localhost:3000 |
+| **Jaeger**, traces (search for service `gateway`) | http://localhost:16686 |
+| Prometheus | http://localhost:9090 |
 | Keycloak (admin console login `admin` / `admin`) | http://localhost:8180 |
 | Kafka UI | http://localhost:8090 |
 | The services themselves | 8081-8084 |
@@ -212,17 +242,19 @@ More to look at:
 - `GET localhost:8080/api/payments/<orderId>` as `admin`: the payment attempt for an order
 - `PUT localhost:8080/api/admin/payment-mode` as `admin`, with `{"declineAll": true}`: makes every payment fail (403 for customers)
 - http://localhost:8025: the confirmation and cancellation emails alice, bob and carol just got
+- http://localhost:3000: the dashboard counting those three orders, how they ended and how long they took
+- http://localhost:16686: each order as one trace through all services
 - Kafka UI at http://localhost:8090: every command, reply and event on its topic, with its `orderflow-message-id` header; failed messages on the `.dlt` topics
 - The tables `outbox_messages` and `processed_messages` in each database (`psql -h localhost -p 5433 -U orderflow orders`)
 
 ## Build and test
 
 ```bash
-./mvnw verify          # format check, compile, all tests incl. architecture and end-to-end, coverage (about 5 minutes)
+./mvnw verify          # format check, compile, all tests incl. architecture and end-to-end, coverage (about 5-6 minutes)
 ./mvnw spotless:apply  # fix formatting
 ```
 
-118 tests in total:
+121 tests in total:
 
 - **Message contracts** (`common`): every message survives a JSON round trip with its type name.
 - **Order state machine:** unit tests for the allowed and refused moves.
@@ -243,6 +275,7 @@ More to look at:
   - the order list shows only your own orders
   - only admins can use the payment switch
 - **Notifications** (against a real Mailpit): confirmation and cancellation emails, one email for a redelivered event, nothing sent without an address.
+- **Observability:** the trace survives the outbox (the Kafka record carries the request's trace id); Prometheus can scrape the business metrics without a token.
 - **Architecture:** 7 ArchUnit rules in every service, plus proof that the key rules catch broken code.
 - **Gateway:**
   - routing with `/api` stripped
@@ -258,6 +291,7 @@ More to look at:
   - a Location header that works
   - the confirmation and cancellation emails in Mailpit
   - Swagger UI and every service's API description through the gateway
+  - one order shows up in Jaeger as one trace spanning all five services
 
 Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per module ends up in `<module>/target/site/jacoco/index.html`.
 
@@ -301,6 +335,10 @@ Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per 
 
 **Architecture rules, chosen on purpose.** Each ArchUnit rule protects a promise the code actually relies on, such as the outbox or the transactional listeners. A popular rule is deliberately missing: "controllers never touch repositories". Here, simple reads (`GET /orders/{id}`) go straight to the repository, and every change goes through the saga or a service. Forcing a pass-through service in between would add code without adding safety.
 
+**The trace travels with the outbox row.** Tracing usually follows a request through threads and HTTP calls automatically. The outbox breaks that chain: the row is written now and sent later by a scheduled relay. Storing the W3C `traceparent` in the row and continuing it in the relay keeps a whole order in one trace, so you can follow it from the gateway to the email in one view.
+
+**Prometheus pulls; traces are pushed.** Metrics are scraped from `/actuator/prometheus` (no collector needed, easy to inspect by hand), while spans go out over OTLP, the vendor-neutral protocol: switching from Jaeger to Tempo, Honeycomb or Datadog is a configuration change. Every trace is kept (sampling 100%) because this is a demo; in production it would be a small fraction.
+
 **Error pages pass security, and a down service is a 503.** Spring Security also guards the error page. With a "deny everything else" rule, a service that was down reached the client as a misleading 403. The shared security defaults now let error dispatches through, and the gateway answers an unreachable service with an explicit 503 Problem Detail.
 
 ## Roadmap
@@ -310,7 +348,7 @@ Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per 
 - [x] Reliability: transactional outbox, idempotent consumers (inbox), retries + dead-letter topics, end-to-end tests against the Docker images
 - [x] Security & edge: Keycloak (OAuth2/JWT, roles, audience), Spring Cloud Gateway, ownership checks, end-to-end with real logins
 - [x] Edge polish: notification-service with Mailpit, rate limiting at the gateway, OpenAPI + one Swagger UI with Keycloak login, ArchUnit rules
-- [ ] Observability: Micrometer, Prometheus, Grafana, OpenTelemetry tracing
+- [x] Observability: business metrics with Micrometer + Prometheus, a provisioned Grafana dashboard, OpenTelemetry tracing into Jaeger, traces carried across the outbox
 - [ ] Kubernetes (Helm), cloud deployment, Spring AI order-support assistant
 
 ## License

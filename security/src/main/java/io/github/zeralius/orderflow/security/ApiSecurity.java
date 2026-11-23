@@ -18,7 +18,8 @@ public final class ApiSecurity {
   /**
    * Stateless bearer-token API: no sessions, no CSRF (there are no cookies to forge), JWTs checked
    * against Keycloak's keys, issuer and audience. Health checks stay open for Docker and
-   * Kubernetes, and so does the OpenAPI description (it is documentation, not data).
+   * Kubernetes, the Prometheus endpoint for scraping (keep it on the internal network), and the
+   * OpenAPI description (it is documentation, not data).
    *
    * <p>Error dispatches are let through: the request itself was already checked, and otherwise a
    * service's real error (say a 503 from a service that is down) would reach the client as a
@@ -33,7 +34,11 @@ public final class ApiSecurity {
             requests
                 .dispatcherTypeMatchers(DispatcherType.ERROR)
                 .permitAll()
-                .requestMatchers("/actuator/health/**", "/v3/api-docs", "/v3/api-docs/**")
+                .requestMatchers(
+                    "/actuator/health/**",
+                    "/actuator/prometheus",
+                    "/v3/api-docs",
+                    "/v3/api-docs/**")
                 .permitAll());
   }
 }

@@ -22,6 +22,10 @@
     <dependencies>
         <dependency>
             <groupId>io.github.zeralius.orderflow</groupId>
+            <artifactId>orderflow-observability</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.zeralius.orderflow</groupId>
             <artifactId>orderflow-security</artifactId>
         </dependency>
         <dependency>

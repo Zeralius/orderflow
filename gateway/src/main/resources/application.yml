@@ -2,6 +2,9 @@ server:
   port: 8080
 
 spring:
+  config:
+    # Metrics, tracing and their settings, shared by all services
+    import: classpath:orderflow-observability.yml
   application:
     name: gateway
   cloud:
@@ -43,8 +46,3 @@ springdoc:
       use-pkce-with-authorization-code-grant: true
       scopes: openid
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics

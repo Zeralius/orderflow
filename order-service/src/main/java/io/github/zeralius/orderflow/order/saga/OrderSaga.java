@@ -22,6 +22,11 @@ import io.github.zeralius.orderflow.messaging.Outbox;
 import io.github.zeralius.orderflow.order.domain.Order;
 import io.github.zeralius.orderflow.order.domain.OrderLine;
 import io.github.zeralius.orderflow.order.domain.OrderRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -50,15 +55,21 @@ public class OrderSaga {
 
   private final OrderRepository orders;
   private final Outbox outbox;
+  private final MeterRegistry meters;
+  private final Counter placed;
 
-  OrderSaga(OrderRepository orders, Outbox outbox) {
+  OrderSaga(OrderRepository orders, Outbox outbox, MeterRegistry meters) {
     this.orders = orders;
     this.outbox = outbox;
+    this.meters = meters;
+    this.placed =
+        Counter.builder("orderflow.orders.placed").description("Orders placed").register(meters);
   }
 
   @Transactional
   public Order placeOrder(String customerId, String customerEmail, List<OrderLine> lines) {
     Order order = orders.save(Order.place(customerId, customerEmail, lines));
+    placed.increment();
     List<StockLine> stockLines =
         lines.stream().map(line -> new StockLine(line.sku(), line.quantity())).toList();
     outbox.add(
@@ -103,6 +114,7 @@ public class OrderSaga {
     switch (reply) {
       case PaymentCompleted completed when order.getStatus() == STOCK_RESERVED -> {
         order.confirm();
+        finished(order, "confirmed");
         outbox.add(
             Topics.ORDER_EVENTS,
             order.getId(),
@@ -128,6 +140,7 @@ public class OrderSaga {
   }
 
   private void publishCancelled(Order order) {
+    finished(order, "cancelled");
     outbox.add(
         Topics.ORDER_EVENTS,
         order.getId(),
@@ -137,6 +150,16 @@ public class OrderSaga {
             order.getCustomerEmail(),
             order.getFailureReason()));
     log.info("Order {} cancelled: {}", order.getId(), order.getFailureReason());
+  }
+
+  /** Saga duration from placing to the final state; the p95 per outcome is on the dashboard. */
+  private void finished(Order order, String outcome) {
+    Timer.builder("orderflow.orders.completed")
+        .description("Time from placing an order until it was confirmed or cancelled")
+        .tag("outcome", outcome)
+        .publishPercentileHistogram()
+        .register(meters)
+        .record(Duration.between(order.getCreatedAt(), Instant.now()));
   }
 
   private static void ignore(Object reply, Order order) {

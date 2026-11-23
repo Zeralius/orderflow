@@ -1,0 +1,29 @@
+# Shared observability settings. Every service imports this file:
+#   spring.config.import: classpath:orderflow-observability.yml
+#
+# Traces are exported only when an OTLP endpoint is set, e.g. in Docker:
+#   MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+# Without it, tracing still works inside the service (trace ids in the logs), nothing is sent.
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  tracing:
+    sampling:
+      # A demo system: keep every trace. In production this would be a small fraction.
+      probability: 1.0
+  metrics:
+    distribution:
+      # Histogram buckets, so Prometheus can compute p95/p99 latencies
+      percentiles-histogram:
+        http.server.requests: true
+
+spring:
+  kafka:
+    # Kafka sends and receives become spans, and the trace context travels in record headers
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true

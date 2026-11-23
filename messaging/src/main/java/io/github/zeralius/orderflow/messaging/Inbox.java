@@ -1,5 +1,7 @@
 package io.github.zeralius.orderflow.messaging;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Optional;
 import java.util.UUID;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -19,9 +21,11 @@ public class Inbox {
   private static final Logger log = LoggerFactory.getLogger(Inbox.class);
 
   private final JdbcClient jdbc;
+  private final MeterRegistry meters;
 
-  public Inbox(JdbcClient jdbc) {
+  public Inbox(JdbcClient jdbc, MeterRegistry meters) {
     this.jdbc = jdbc;
+    this.meters = meters;
   }
 
   /** True the first time this message arrives; false for a redelivery. */
@@ -45,6 +49,11 @@ public class Inbox {
             .update();
     if (inserted == 0) {
       log.info("Skipping duplicate message {} on {}", messageId.get(), record.topic());
+      Counter.builder("orderflow.inbox.duplicates")
+          .description("Redelivered messages the inbox recognised and skipped")
+          .tag("topic", record.topic())
+          .register(meters)
+          .increment();
     }
     return inserted == 1;
   }

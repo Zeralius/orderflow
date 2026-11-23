@@ -23,6 +23,7 @@
         <module>common</module>
         <module>messaging</module>
         <module>security</module>
+        <module>observability</module>
         <module>architecture-rules</module>
         <module>order-service</module>
         <module>inventory-service</module>
@@ -56,6 +57,11 @@
             <dependency>
                 <groupId>io.github.zeralius.orderflow</groupId>
                 <artifactId>orderflow-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.zeralius.orderflow</groupId>
+                <artifactId>orderflow-observability</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <!-- OpenAPI docs (springdoc 3.2 is built for Spring Boot 4.2) -->

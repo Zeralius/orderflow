@@ -1,5 +1,6 @@
 package io.github.zeralius.orderflow.messaging;
 
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.annotation.Propagation;
@@ -14,27 +15,32 @@ public class Outbox {
 
   private final JdbcClient jdbc;
   private final MessageCodec codec;
+  private final TraceContinuation trace;
 
-  public Outbox(JdbcClient jdbc, MessageCodec codec) {
+  public Outbox(JdbcClient jdbc, MessageCodec codec, TraceContinuation trace) {
     this.jdbc = jdbc;
     this.codec = codec;
+    this.trace = trace;
   }
 
   /**
    * Queues a message for {@code topic}, keyed by its order id. Must be called inside a transaction:
-   * a message without one could not be tied to any business change.
+   * a message without one could not be tied to any business change. The current trace context is
+   * stored with it, so the trace continues when the relay sends it.
    */
   @Transactional(propagation = Propagation.MANDATORY)
   public void add(String topic, UUID orderId, Object message) {
+    Map<String, String> traceContext = trace.capture();
     jdbc.sql(
             """
-            INSERT INTO outbox_messages (message_id, topic, message_key, payload)
-            VALUES (:messageId, :topic, :key, :payload)
+            INSERT INTO outbox_messages (message_id, topic, message_key, payload, trace_context)
+            VALUES (:messageId, :topic, :key, :payload, :traceContext)
             """)
         .param("messageId", UUID.randomUUID())
         .param("topic", topic)
         .param("key", orderId.toString())
         .param("payload", codec.write(message))
+        .param("traceContext", traceContext.isEmpty() ? null : codec.write(traceContext))
         .update();
   }
 }

@@ -4,6 +4,7 @@ import io.github.zeralius.orderflow.common.messaging.OrderEvent;
 import io.github.zeralius.orderflow.common.messaging.Topics;
 import io.github.zeralius.orderflow.messaging.Inbox;
 import io.github.zeralius.orderflow.messaging.MessageCodec;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,18 +35,21 @@ public class OrderEventListener {
   private final JavaMailSender mail;
   private final JdbcClient jdbc;
   private final String from;
+  private final MeterRegistry meters;
 
   OrderEventListener(
       Inbox inbox,
       MessageCodec codec,
       JavaMailSender mail,
       JdbcClient jdbc,
-      @Value("${orderflow.notification.from}") String from) {
+      @Value("${orderflow.notification.from}") String from,
+      MeterRegistry meters) {
     this.inbox = inbox;
     this.codec = codec;
     this.mail = mail;
     this.jdbc = jdbc;
     this.from = from;
+    this.meters = meters;
   }
 
   @KafkaListener(topics = Topics.ORDER_EVENTS)
@@ -71,6 +75,7 @@ public class OrderEventListener {
   }
 
   private void remember(OrderEmail email, String status) {
+    meters.counter("orderflow.notifications", "kind", email.kind(), "status", status).increment();
     jdbc.sql(
             """
             INSERT INTO notifications (order_id, kind, recipient, subject, status)
