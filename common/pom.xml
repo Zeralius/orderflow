@@ -12,5 +12,29 @@
 
     <artifactId>orderflow-common</artifactId>
     <name>OrderFlow :: Common</name>
-    <description>Event schemas shared by all services. Plain Java, no Spring.</description>
+    <description>Message contracts shared by all services: Kafka topics, commands, replies and events. Plain Java, no Spring.</description>
+
+    <dependencies>
+        <!-- Only the annotations, so the services decide how JSON is actually read and written -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 </project>

@@ -14,9 +14,20 @@ spring:
       ddl-auto: validate
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: payment-service
+      auto-offset-reset: earliest
+  mvc:
+    problemdetails:
+      enabled: true
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics
+
+orderflow:
+  payment:
+    # The fake provider declines any charge above this amount
+    decline-above: "1000.00"
