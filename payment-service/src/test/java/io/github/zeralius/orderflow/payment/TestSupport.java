@@ -16,14 +16,39 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.context.annotation.Bean;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
-/** Shared test infrastructure: real containers, a Kafka sender and a Kafka topic reader. */
+/** Shared test infrastructure: real containers, test users, a Kafka sender and a topic reader. */
 public final class TestSupport {
 
   private TestSupport() {}
+
+  /** A request from a logged-in customer, as Keycloak would describe them in the token. */
+  public static RequestPostProcessor customer(String username) {
+    return user(username, "customer");
+  }
+
+  /** A request from a logged-in admin. */
+  public static RequestPostProcessor admin(String username) {
+    return user(username, "admin");
+  }
+
+  /** A valid token without any OrderFlow role. */
+  public static RequestPostProcessor userWithoutRoles(String username) {
+    return SecurityMockMvcRequestPostProcessors.jwt()
+        .jwt(token -> token.subject(username).claim("preferred_username", username));
+  }
+
+  private static RequestPostProcessor user(String username, String role) {
+    return SecurityMockMvcRequestPostProcessors.jwt()
+        .jwt(token -> token.subject(username).claim("preferred_username", username))
+        .authorities(new SimpleGrantedAuthority("ROLE_" + role));
+  }
 
   /** Real PostgreSQL and Kafka for tests, same versions as compose.yaml. */
   @TestConfiguration(proxyBeanMethods = false)

@@ -22,9 +22,11 @@
     <modules>
         <module>common</module>
         <module>messaging</module>
+        <module>security</module>
         <module>order-service</module>
         <module>inventory-service</module>
         <module>payment-service</module>
+        <module>gateway</module>
         <module>e2e-tests</module>
     </modules>
 
@@ -32,6 +34,7 @@
         <java.version>25</java.version>
         <spotless.version>3.12.0</spotless.version>
         <jacoco.version>0.8.16</jacoco.version>
+        <spring-cloud.version>2026.0.0</spring-cloud.version>
     </properties>
 
     <dependencyManagement>
@@ -45,6 +48,19 @@
                 <groupId>io.github.zeralius.orderflow</groupId>
                 <artifactId>orderflow-messaging</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.zeralius.orderflow</groupId>
+                <artifactId>orderflow-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <!-- Spring Cloud 2026.0 is built for Spring Boot 4.2 -->
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>

@@ -1,8 +1,9 @@
 # Local infrastructure for OrderFlow: `docker compose up -d`
-# Whole system incl. the three services: `./mvnw package -DskipTests && docker compose --profile apps up -d --build`
+# Whole system incl. the services and the gateway (http://localhost:8080): `./mvnw package -DskipTests && docker compose --profile apps up -d --build`
 #   PostgreSQL  localhost:5433  (databases: orders, inventory, payments; user/password: orderflow, local dev only)
 #   Kafka       localhost:9092  (KRaft, single node, no ZooKeeper)
 #   Kafka UI    http://localhost:8090
+#   Keycloak    http://localhost:8180  (realm orderflow; demo users alice/alice, bob/bob, carol/carol, admin/admin; console admin/admin)
 services:
   postgres:
     image: postgres:18-alpine
@@ -44,6 +45,25 @@ services:
       timeout: 10s
       retries: 10
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin   # Keycloak's own admin console, local dev only
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8180   # tokens always say iss=http://localhost:8180/realms/orderflow
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
   kafka-ui:
     image: kafbat/kafka-ui:v1.5.1
     ports:
@@ -54,6 +74,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
 
   order-service:
     profiles: [apps]
@@ -63,10 +85,13 @@ services:
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/orders
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      OIDC_JWKS: http://keycloak:8080/realms/orderflow/protocol/openid-connect/certs
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
 
   inventory-service:
@@ -77,10 +102,13 @@ services:
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/inventory
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      OIDC_JWKS: http://keycloak:8080/realms/orderflow/protocol/openid-connect/certs
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
 
   payment-service:
@@ -91,10 +119,27 @@ services:
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/payments
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      OIDC_JWKS: http://keycloak:8080/realms/orderflow/protocol/openid-connect/certs
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+  gateway:
+    profiles: [apps]
+    build: ./gateway
+    ports:
+      - "8080:8080"
+    environment:
+      ORDER_SERVICE_URL: http://order-service:8081
+      INVENTORY_SERVICE_URL: http://inventory-service:8082
+      PAYMENT_SERVICE_URL: http://payment-service:8083
+      OIDC_JWKS: http://keycloak:8080/realms/orderflow/protocol/openid-connect/certs
+    depends_on:
+      keycloak:
         condition: service_healthy
 
 volumes:

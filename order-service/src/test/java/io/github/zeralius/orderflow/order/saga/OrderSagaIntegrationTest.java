@@ -148,8 +148,9 @@ class OrderSagaIntegrationTest {
             .contentType(MediaType.APPLICATION_JSON)
             .content(
                 """
-                {"customerId": "", "lines": []}
+                {"lines": []}
                 """)
+            .with(TestSupport.customer("alice"))
             .exchange();
 
     assertThat(result).hasStatus(HttpStatus.BAD_REQUEST);
@@ -158,7 +159,11 @@ class OrderSagaIntegrationTest {
 
   @Test
   void unknownOrderIsNotFound() {
-    assertThat(mvc.get().uri("/orders/{id}", UUID.randomUUID()).exchange())
+    assertThat(
+            mvc.get()
+                .uri("/orders/{id}", UUID.randomUUID())
+                .with(TestSupport.customer("alice"))
+                .exchange())
         .hasStatus(HttpStatus.NOT_FOUND);
   }
 
@@ -169,15 +174,16 @@ class OrderSagaIntegrationTest {
             .contentType(MediaType.APPLICATION_JSON)
             .content(
                 """
-                {"customerId": "%s", "lines": [{"sku": "BOOK-JAVA25", "quantity": 2}]}
-                """
-                    .formatted(customerId))
+                {"lines": [{"sku": "BOOK-JAVA25", "quantity": 2}]}
+                """)
+            .with(TestSupport.customer(customerId))
             .exchange();
 
     assertThat(result).hasStatus(HttpStatus.ACCEPTED);
     assertThat(result).bodyJson().extractingPath("$.status").isEqualTo("PENDING");
+    assertThat(result).bodyJson().extractingPath("$.customerId").isEqualTo(customerId);
     String location = result.getResponse().getHeader("Location");
-    return UUID.fromString(location.substring("/orders/".length()));
+    return UUID.fromString(location.substring(location.lastIndexOf('/') + 1));
   }
 
   private <T> T read(String topic, UUID orderId, Class<T> type) {

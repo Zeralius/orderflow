@@ -4,13 +4,17 @@
 
 An event-driven online-shop backend: Spring Boot microservices that talk over Apache Kafka. One order runs as a **saga** across the services, and every failure path (out of stock, payment declined) is handled and undone where needed.
 
-> Status: **reliable messaging done**. The saga runs across three services with compensation. Messages go through a transactional outbox, are de-duplicated on arrival, and messages that keep failing are parked on dead-letter topics. An end-to-end test runs the real Docker images. Next: Keycloak and an API gateway (see [Roadmap](#roadmap)).
+> Status: **secured**. The saga runs across three services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Everything sits behind an API gateway, and users log in through Keycloak: customers only see their own orders, and admin-only actions need the admin role. An end-to-end test runs the real Docker images with real logins. Next: notifications, rate limiting, API docs (see [Roadmap](#roadmap)).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    client([Client]) -->|REST| order[order-service<br/>saga orchestrator]
+    client([Client]) -->|"1. log in"| keycloak[Keycloak]
+    client -->|"2. REST + token"| gateway[gateway]
+    gateway -->|/api/orders| order[order-service<br/>saga orchestrator]
+    gateway -->|/api/products| inventory
+    gateway -->|"/api/payments, /api/admin"| payment
     order -->|inventory.commands| inventory[inventory-service]
     inventory -->|inventory.replies| order
     order -->|payment.commands| payment[payment-service]
@@ -25,10 +29,12 @@ flowchart LR
 |---|---|---|
 | `common` | – | Message contracts: topics and the commands, replies and events (Java records, sealed interfaces) |
 | `messaging` | – | Reliable messaging as Spring Boot auto-configuration: outbox, inbox, retries, dead letters |
+| `security` | – | Shared OAuth2 setup: Keycloak roles to Spring Security, common API defaults |
+| `gateway` | 8080 | The single entry point: checks the token, routes `/api/**` to the services |
 | `order-service` | 8081 | REST API, order state machine, runs the saga |
 | `inventory-service` | 8082 | Catalogue, prices and stock; reserves all-or-nothing, releases on request |
 | `payment-service` | 8083 | Fake payment provider: declines above a limit, or everything via a demo switch |
-| `e2e-tests` | – | Black-box tests: the three services as Docker containers, talking only HTTP |
+| `e2e-tests` | – | Black-box tests: the whole system as Docker containers, with real Keycloak logins, talking only HTTP to the gateway |
 
 Each service owns its own database. They share nothing but the messages in `common`.
 
@@ -54,6 +60,25 @@ flowchart LR
 - **Several instances.** The relay locks its batch with `FOR UPDATE SKIP LOCKED`, so several instances of a service can share the outbox.
 
 The library plugs in through Spring Boot auto-configuration. A service adds the dependency and the two tables, and calls `outbox.add(...)` and `inbox.firstDelivery(...)`.
+
+## Security
+
+Users log in at **Keycloak** (OpenID Connect) and send the access token with every request. The realm, with its roles, a demo client and demo users, is part of the repository (`docker/keycloak/orderflow-realm.json`) and is imported when Keycloak starts.
+
+| User / password | Roles |
+|---|---|
+| `alice` / `alice`, `bob` / `bob`, `carol` / `carol` | customer |
+| `admin` / `admin` | admin, customer |
+
+Every token is checked **twice**: by the gateway, and again by the service it reaches. That includes signature, expiry, issuer, and audience (`orderflow-api`). A service never trusts that a request came through the gateway.
+
+| Endpoint (through the gateway) | Who |
+|---|---|
+| `GET /api/products/**` | anyone, no token |
+| `POST /api/orders`, `GET /api/orders` | customer, admin. The customer is taken from the token, never from the request body |
+| `GET /api/orders/{id}` | the order's own customer, or an admin. Anyone else gets 404, so order ids can't be probed |
+| `GET /api/payments/{orderId}`, `/api/admin/**` | admin |
+| no or invalid token | 401, stopped at the gateway |
 
 ## The saga
 
@@ -89,7 +114,7 @@ Order states: `PENDING → STOCK_RESERVED → CONFIRMED`, or `PENDING → CANCEL
 
 ## Tech stack
 
-Java 25 (records, sealed interfaces, pattern-matching `switch`) · Spring Boot 4.2 · Spring for Apache Kafka · Maven (multi-module, wrapper) · Apache Kafka 4.4 (KRaft) · PostgreSQL 18 · Flyway · Spring Data JPA / Hibernate · Bean Validation · RFC 9457 Problem Details · Testcontainers · JUnit 5 · AssertJ · Spotless · JaCoCo · Docker Compose · GitHub Actions
+Java 25 (records, sealed interfaces, pattern-matching `switch`) · Spring Boot 4.2 · Spring Security 7 (OAuth2 resource server) · Keycloak 26 · Spring Cloud Gateway (Server WebMVC) · Spring for Apache Kafka · Maven (multi-module, wrapper) · Apache Kafka 4.4 (KRaft) · PostgreSQL 18 · Flyway · Spring Data JPA / Hibernate · Bean Validation · RFC 9457 Problem Details · Testcontainers · JUnit 5 · AssertJ · Spotless · JaCoCo · Docker Compose · GitHub Actions
 
 ## Run it locally
 
@@ -99,8 +124,10 @@ Requirements: JDK 25 and Docker.
 
 ```bash
 ./mvnw -q package -DskipTests
-docker compose --profile apps up -d --build   # services on 8081-8083, PostgreSQL on 5433, Kafka UI on http://localhost:8090
+docker compose --profile apps up -d --build
 ```
+
+The gateway is on http://localhost:8080, Keycloak on http://localhost:8180 (its admin console login is `admin` / `admin`), and Kafka UI on http://localhost:8090. The services themselves listen on 8081-8083, and PostgreSQL on 5433.
 
 **Or the services from your IDE / terminal**, with only the infrastructure in Docker:
 
@@ -109,43 +136,57 @@ docker compose up -d
 java -jar order-service/target/order-service-0.1.0-SNAPSHOT.jar
 java -jar inventory-service/target/inventory-service-0.1.0-SNAPSHOT.jar
 java -jar payment-service/target/payment-service-0.1.0-SNAPSHOT.jar
+java -jar gateway/target/gateway-0.1.0-SNAPSHOT.jar
 ```
 
 ### Try the three outcomes
 
+First log in. The demo client allows the password grant, so a token is one `curl` away:
+
+```bash
+token() {
+  curl -s localhost:8180/realms/orderflow/protocol/openid-connect/token \
+    -d grant_type=password -d client_id=orderflow-demo -d username=$1 -d password=$1 \
+    | sed -E 's/.*"access_token":"([^"]+)".*/\1/'
+}
+```
+
+Then order through the gateway:
+
 ```bash
 # 1. Confirmed: 2 books at 39.90
-curl -i -X POST localhost:8081/orders -H 'Content-Type: application/json' \
-  -d '{"customerId":"alice","lines":[{"sku":"BOOK-JAVA25","quantity":2}]}'
+curl -i -X POST localhost:8080/api/orders -H "Authorization: Bearer $(token alice)" \
+  -H 'Content-Type: application/json' -d '{"lines":[{"sku":"BOOK-JAVA25","quantity":2}]}'
 
 # 2. Out of stock: there is only one poster
-curl -X POST localhost:8081/orders -H 'Content-Type: application/json' \
-  -d '{"customerId":"bob","lines":[{"sku":"LIMITED-POSTER","quantity":2}]}'
+curl -X POST localhost:8080/api/orders -H "Authorization: Bearer $(token bob)" \
+  -H 'Content-Type: application/json' -d '{"lines":[{"sku":"LIMITED-POSTER","quantity":2}]}'
 
 # 3. Payment declined (1245.00 is above the 1000.00 limit), stock is given back
-curl -X POST localhost:8081/orders -H 'Content-Type: application/json' \
-  -d '{"customerId":"carol","lines":[{"sku":"HEADSET-PRO","quantity":5}]}'
+curl -X POST localhost:8080/api/orders -H "Authorization: Bearer $(token carol)" \
+  -H 'Content-Type: application/json' -d '{"lines":[{"sku":"HEADSET-PRO","quantity":5}]}'
 
-# Follow the Location header of each answer:
-curl localhost:8081/orders/<id>
+# Follow the Location header of an answer (it points at the gateway), as the same user:
+curl localhost:8080/api/orders/<id> -H "Authorization: Bearer $(token alice)"
 ```
 
 More to look at:
 
-- `GET localhost:8082/products`: catalogue and stock levels
-- `GET localhost:8083/payments/<orderId>`: the payment attempt for an order
-- `PUT localhost:8083/admin/payment-mode` with `{"declineAll": true}`: makes every payment fail
+- `GET localhost:8080/api/products`: catalogue and stock levels (no token needed)
+- `GET localhost:8080/api/orders`: your own orders
+- `GET localhost:8080/api/payments/<orderId>` as `admin`: the payment attempt for an order
+- `PUT localhost:8080/api/admin/payment-mode` as `admin`, with `{"declineAll": true}`: makes every payment fail (403 for customers)
 - Kafka UI at http://localhost:8090: every command, reply and event on its topic, with its `orderflow-message-id` header; failed messages on the `.dlt` topics
 - The tables `outbox_messages` and `processed_messages` in each database (`psql -h localhost -p 5433 -U orderflow orders`)
 
 ## Build and test
 
 ```bash
-./mvnw verify          # format check, compile, all tests incl. end-to-end, coverage (about 2 minutes)
+./mvnw verify          # format check, compile, all tests incl. end-to-end, coverage (about 3-4 minutes)
 ./mvnw spotless:apply  # fix formatting
 ```
 
-48 tests in total:
+70 tests in total:
 
 - **Message contracts** (`common`): every message survives a JSON round trip with its type name.
 - **Order state machine:** unit tests for the allowed and refused moves.
@@ -158,7 +199,23 @@ More to look at:
   - unreadable messages land on the dead-letter topic
 - **Inventory:** all-or-nothing reservation, pricing, duplicate SKUs, repeated commands, release exactly once.
 - **Payment:** limit, demo switch, no double charge on a repeated command.
-- **End to end** (`e2e-tests`): builds Docker images from the three real jars, starts them with PostgreSQL and Kafka, and checks all three outcomes over HTTP only. That includes the stock coming back after a declined payment.
+- **Security:**
+  - Keycloak roles become Spring roles
+  - no token → 401, a token without the role → 403
+  - the customer comes from the token, not the body
+  - customers can't see each other's orders, admins see all
+  - the order list shows only your own orders
+  - only admins can use the payment switch
+- **Gateway:**
+  - routing with `/api` stripped
+  - no token stops at the gateway
+  - unknown paths are denied
+  - Location headers get their `/api` back
+  - a service that is down gives a 503 Problem Detail
+- **End to end** (`e2e-tests`): builds Docker images from the real jars and starts the whole system, including Keycloak and the gateway. It logs in like a user and checks everything over HTTP through the gateway:
+  - all three order outcomes, including the stock coming back after a declined payment
+  - 401 without a token, 404 for someone else's order, 403 on the payment switch for customers
+  - a Location header that works
 
 Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per module ends up in `<module>/target/site/jacoco/index.html`.
 
@@ -186,12 +243,21 @@ Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per 
 
 **202 Accepted.** Placing an order starts a process; it doesn't finish one. The API answers `202` with a `Location` to poll, instead of pretending the order is done.
 
+**Defence in depth: the gateway and the services both check the token.** The gateway turns away anything without a valid token before it costs a service anything. Each service still checks again and applies its own rules (roles, ownership), so a request that gets around the gateway, say from inside the network, gets nothing. Coarse checks happen at the edge; the decisions stay with the service that owns the data.
+
+**Identity from the token, not the request.** `POST /orders` has no customer field: the customer is the logged-in user. Someone else's order answers 404 instead of 403, so a stranger can't even tell that an order id exists.
+
+**The audience is checked too.** Tokens must be issued for `orderflow-api` (a Keycloak audience mapper adds it). A token from the same Keycloak that was meant for another application doesn't work here.
+
+**Error pages pass security, and a down service is a 503.** Spring Security also guards the error page. With a "deny everything else" rule, a service that was down reached the client as a misleading 403. The shared security defaults now let error dispatches through, and the gateway answers an unreachable service with an explicit 503 Problem Detail.
+
 ## Roadmap
 
 - [x] Setup: Maven multi-module, wrapper, Compose, CI, formatting, coverage
 - [x] MVP: message contracts, order API + state machine, inventory, payment, orchestrated saga with compensation, Testcontainers tests
 - [x] Reliability: transactional outbox, idempotent consumers (inbox), retries + dead-letter topics, end-to-end tests against the Docker images
-- [ ] Security & edge: Keycloak (OAuth2/JWT), Spring Cloud Gateway, notification-service
+- [x] Security & edge: Keycloak (OAuth2/JWT, roles, audience), Spring Cloud Gateway, ownership checks, end-to-end with real logins
+- [ ] Edge polish: notification-service, rate limiting at the gateway, OpenAPI docs, ArchUnit rules
 - [ ] Observability: Micrometer, Prometheus, Grafana, OpenTelemetry tracing
 - [ ] Kubernetes (Helm), cloud deployment, Spring AI order-support assistant
 

@@ -31,7 +31,7 @@ class PaymentController {
             new ResponseStatusException(HttpStatus.NOT_FOUND, "No payment for order " + orderId));
   }
 
-  /** Demo switch. Unsecured for now; Keycloak protects it in the next milestone. */
+  /** Demo switch: admin only (see SecurityConfig). */
   @GetMapping("/admin/payment-mode")
   PaymentMode mode() {
     return new PaymentMode(provider.isDeclineAll(), provider.getDeclineAbove());

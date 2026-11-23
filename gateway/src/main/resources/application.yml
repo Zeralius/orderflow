@@ -1,0 +1,32 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: gateway
+  cloud:
+    gateway:
+      server:
+        webmvc:
+          # Turns on X-Forwarded-* (incl. X-Forwarded-Prefix: /api) towards the services, so their
+          # links point at the gateway. Only proxies on private networks are trusted to send their own.
+          trusted-proxies: ${TRUSTED_PROXIES:(127\..*|10\..*|172\.(1[6-9]|2[0-9]|3[01])\..*|192\.168\..*|0:0:0:0:0:0:0:1|::1)}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER:http://localhost:8180/realms/orderflow}
+          jwk-set-uri: ${OIDC_JWKS:http://localhost:8180/realms/orderflow/protocol/openid-connect/certs}
+          audiences: orderflow-api
+
+orderflow:
+  services:
+    order: ${ORDER_SERVICE_URL:http://localhost:8081}
+    inventory: ${INVENTORY_SERVICE_URL:http://localhost:8082}
+    payment: ${PAYMENT_SERVICE_URL:http://localhost:8083}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

@@ -1,5 +1,7 @@
 server:
   port: 8081
+  # Behind the gateway, build links (Location header) from X-Forwarded-* so they point at the gateway
+  forward-headers-strategy: framework
 
 spring:
   application:
@@ -20,6 +22,15 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Tokens must come from this Keycloak realm and be meant for the OrderFlow API.
+          # Keys are fetched from jwk-set-uri (inside Docker: http://keycloak:8080/...).
+          issuer-uri: ${OIDC_ISSUER:http://localhost:8180/realms/orderflow}
+          jwk-set-uri: ${OIDC_JWKS:http://localhost:8180/realms/orderflow/protocol/openid-connect/certs}
+          audiences: orderflow-api
 
 management:
   endpoints:
