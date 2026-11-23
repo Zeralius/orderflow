@@ -1,4 +1,5 @@
 # Local infrastructure for OrderFlow: `docker compose up -d`
+# Whole system incl. the three services: `./mvnw package -DskipTests && docker compose --profile apps up -d --build`
 #   PostgreSQL  localhost:5433  (databases: orders, inventory, payments; user/password: orderflow, local dev only)
 #   Kafka       localhost:9092  (KRaft, single node, no ZooKeeper)
 #   Kafka UI    http://localhost:8090
@@ -51,6 +52,48 @@ services:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
     depends_on:
+      kafka:
+        condition: service_healthy
+
+  order-service:
+    profiles: [apps]
+    build: ./order-service
+    ports:
+      - "8081:8081"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/orders
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  inventory-service:
+    profiles: [apps]
+    build: ./inventory-service
+    ports:
+      - "8082:8082"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/inventory
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  payment-service:
+    profiles: [apps]
+    build: ./payment-service
+    ports:
+      - "8083:8083"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/payments
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
       kafka:
         condition: service_healthy
 

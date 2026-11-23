@@ -21,11 +21,11 @@ import io.github.zeralius.orderflow.common.messaging.PaymentCommand;
 import io.github.zeralius.orderflow.common.messaging.PaymentCommand.ProcessPayment;
 import io.github.zeralius.orderflow.common.messaging.PaymentReply.PaymentCompleted;
 import io.github.zeralius.orderflow.common.messaging.PaymentReply.PaymentFailed;
+import io.github.zeralius.orderflow.messaging.MessageCodec;
 import io.github.zeralius.orderflow.order.TestSupport;
 import io.github.zeralius.orderflow.order.domain.Order;
 import io.github.zeralius.orderflow.order.domain.OrderRepository;
 import io.github.zeralius.orderflow.order.domain.OrderStatus;
-import io.github.zeralius.orderflow.order.messaging.KafkaMessages;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
@@ -56,7 +56,8 @@ class OrderSagaIntegrationTest {
 
   @Autowired MockMvcTester mvc;
   @Autowired OrderRepository orders;
-  @Autowired KafkaMessages messages;
+  @Autowired TestSupport.Sender sender;
+  @Autowired MessageCodec codec;
   @Autowired ConsumerFactory<String, String> consumers;
 
   private TestSupport.TopicProbe probe;
@@ -78,11 +79,11 @@ class OrderSagaIntegrationTest {
     assertThat(read(INVENTORY_COMMANDS, id, InventoryCommand.class))
         .isEqualTo(new ReserveStock(id, List.of(new StockLine("BOOK-JAVA25", 2))));
 
-    messages.send(INVENTORY_REPLIES, id, new StockReserved(id, TOTAL));
+    sender.send(INVENTORY_REPLIES, id, new StockReserved(id, TOTAL));
     assertThat(read(PAYMENT_COMMANDS, id, PaymentCommand.class))
         .isEqualTo(new ProcessPayment(id, "alice", TOTAL));
 
-    messages.send(PAYMENT_REPLIES, id, new PaymentCompleted(id, UUID.randomUUID()));
+    sender.send(PAYMENT_REPLIES, id, new PaymentCompleted(id, UUID.randomUUID()));
     assertThat(read(ORDER_EVENTS, id, OrderEvent.class))
         .isEqualTo(new OrderConfirmed(id, "alice", TOTAL));
 
@@ -95,17 +96,17 @@ class OrderSagaIntegrationTest {
   void failedPaymentReleasesTheStockThenCancels() {
     UUID id = placeOrder("bob");
     read(INVENTORY_COMMANDS, id, InventoryCommand.class);
-    messages.send(INVENTORY_REPLIES, id, new StockReserved(id, TOTAL));
+    sender.send(INVENTORY_REPLIES, id, new StockReserved(id, TOTAL));
     read(PAYMENT_COMMANDS, id, PaymentCommand.class);
 
-    messages.send(PAYMENT_REPLIES, id, new PaymentFailed(id, "Card declined"));
+    sender.send(PAYMENT_REPLIES, id, new PaymentFailed(id, "Card declined"));
 
     // Compensation: the saga asks inventory to give the stock back
     assertThat(read(INVENTORY_COMMANDS, id, InventoryCommand.class))
         .isEqualTo(new ReleaseStock(id));
     assertThat(orders.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CANCELLING);
 
-    messages.send(INVENTORY_REPLIES, id, new StockReleased(id));
+    sender.send(INVENTORY_REPLIES, id, new StockReleased(id));
     assertThat(read(ORDER_EVENTS, id, OrderEvent.class))
         .isEqualTo(new OrderCancelled(id, "bob", "Card declined"));
     assertThat(orders.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CANCELLED);
@@ -116,7 +117,7 @@ class OrderSagaIntegrationTest {
     UUID id = placeOrder("carol");
     read(INVENTORY_COMMANDS, id, InventoryCommand.class);
 
-    messages.send(INVENTORY_REPLIES, id, new StockReservationFailed(id, "Out of stock"));
+    sender.send(INVENTORY_REPLIES, id, new StockReservationFailed(id, "Out of stock"));
 
     assertThat(read(ORDER_EVENTS, id, OrderEvent.class))
         .isEqualTo(new OrderCancelled(id, "carol", "Out of stock"));
@@ -128,10 +129,10 @@ class OrderSagaIntegrationTest {
     UUID id = placeOrder("dave");
     read(INVENTORY_COMMANDS, id, InventoryCommand.class);
 
-    messages.send(INVENTORY_REPLIES, id, new StockReserved(id, TOTAL));
-    messages.send(INVENTORY_REPLIES, id, new StockReserved(id, TOTAL));
+    sender.send(INVENTORY_REPLIES, id, new StockReserved(id, TOTAL));
+    sender.send(INVENTORY_REPLIES, id, new StockReserved(id, TOTAL));
     read(PAYMENT_COMMANDS, id, PaymentCommand.class);
-    messages.send(PAYMENT_REPLIES, id, new PaymentCompleted(id, UUID.randomUUID()));
+    sender.send(PAYMENT_REPLIES, id, new PaymentCompleted(id, UUID.randomUUID()));
     read(ORDER_EVENTS, id, OrderEvent.class);
 
     // The second StockReserved must not charge the customer a second time
@@ -180,6 +181,6 @@ class OrderSagaIntegrationTest {
   }
 
   private <T> T read(String topic, UUID orderId, Class<T> type) {
-    return messages.read(probe.next(topic, orderId), type);
+    return codec.read(probe.next(topic, orderId), type);
   }
 }

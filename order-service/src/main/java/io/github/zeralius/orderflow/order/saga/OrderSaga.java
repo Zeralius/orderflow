@@ -18,10 +18,10 @@ import io.github.zeralius.orderflow.common.messaging.PaymentReply;
 import io.github.zeralius.orderflow.common.messaging.PaymentReply.PaymentCompleted;
 import io.github.zeralius.orderflow.common.messaging.PaymentReply.PaymentFailed;
 import io.github.zeralius.orderflow.common.messaging.Topics;
+import io.github.zeralius.orderflow.messaging.Outbox;
 import io.github.zeralius.orderflow.order.domain.Order;
 import io.github.zeralius.orderflow.order.domain.OrderLine;
 import io.github.zeralius.orderflow.order.domain.OrderRepository;
-import io.github.zeralius.orderflow.order.messaging.KafkaMessages;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -49,11 +49,11 @@ public class OrderSaga {
   private static final Logger log = LoggerFactory.getLogger(OrderSaga.class);
 
   private final OrderRepository orders;
-  private final KafkaMessages messages;
+  private final Outbox outbox;
 
-  OrderSaga(OrderRepository orders, KafkaMessages messages) {
+  OrderSaga(OrderRepository orders, Outbox outbox) {
     this.orders = orders;
-    this.messages = messages;
+    this.outbox = outbox;
   }
 
   @Transactional
@@ -61,7 +61,7 @@ public class OrderSaga {
     Order order = orders.save(Order.place(customerId, lines));
     List<StockLine> stockLines =
         lines.stream().map(line -> new StockLine(line.sku(), line.quantity())).toList();
-    messages.send(
+    outbox.add(
         Topics.INVENTORY_COMMANDS, order.getId(), new ReserveStock(order.getId(), stockLines));
     log.info("Order {} placed by {}, reserving stock", order.getId(), customerId);
     return order;
@@ -76,7 +76,7 @@ public class OrderSaga {
     switch (reply) {
       case StockReserved reserved when order.getStatus() == PENDING -> {
         order.stockReserved(reserved.total());
-        messages.send(
+        outbox.add(
             Topics.PAYMENT_COMMANDS,
             order.getId(),
             new ProcessPayment(order.getId(), order.getCustomerId(), reserved.total()));
@@ -103,7 +103,7 @@ public class OrderSaga {
     switch (reply) {
       case PaymentCompleted completed when order.getStatus() == STOCK_RESERVED -> {
         order.confirm();
-        messages.send(
+        outbox.add(
             Topics.ORDER_EVENTS,
             order.getId(),
             new OrderConfirmed(order.getId(), order.getCustomerId(), order.getTotal()));
@@ -111,7 +111,7 @@ public class OrderSaga {
       }
       case PaymentFailed failed when order.getStatus() == STOCK_RESERVED -> {
         order.startCancelling(failed.reason());
-        messages.send(Topics.INVENTORY_COMMANDS, order.getId(), new ReleaseStock(order.getId()));
+        outbox.add(Topics.INVENTORY_COMMANDS, order.getId(), new ReleaseStock(order.getId()));
         log.info("Order {} payment failed ({}), releasing stock", order.getId(), failed.reason());
       }
       default -> ignore(reply, order);
@@ -127,7 +127,7 @@ public class OrderSaga {
   }
 
   private void publishCancelled(Order order) {
-    messages.send(
+    outbox.add(
         Topics.ORDER_EVENTS,
         order.getId(),
         new OrderCancelled(order.getId(), order.getCustomerId(), order.getFailureReason()));

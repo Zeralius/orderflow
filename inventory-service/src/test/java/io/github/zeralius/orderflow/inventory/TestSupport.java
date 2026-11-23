@@ -1,21 +1,26 @@
 package io.github.zeralius.orderflow.inventory;
 
+import io.github.zeralius.orderflow.messaging.Headers;
+import io.github.zeralius.orderflow.messaging.MessageCodec;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
-/** Shared test infrastructure: real containers and a Kafka topic reader. */
+/** Shared test infrastructure: real containers, a Kafka sender and a Kafka topic reader. */
 public final class TestSupport {
 
   private TestSupport() {}
@@ -34,6 +39,43 @@ public final class TestSupport {
     @ServiceConnection
     KafkaContainer kafka() {
       return new KafkaContainer(DockerImageName.parse("apache/kafka:4.4.0"));
+    }
+
+    @Bean
+    Sender testSender(KafkaTemplate<String, String> kafka, MessageCodec codec) {
+      return new Sender(kafka, codec);
+    }
+  }
+
+  /** Sends messages the way another service's outbox does: JSON plus a message-id header. */
+  public static class Sender {
+
+    private final KafkaTemplate<String, String> kafka;
+    private final MessageCodec codec;
+
+    Sender(KafkaTemplate<String, String> kafka, MessageCodec codec) {
+      this.kafka = kafka;
+      this.codec = codec;
+    }
+
+    public UUID send(String topic, UUID orderId, Object message) {
+      return send(topic, orderId, message, UUID.randomUUID());
+    }
+
+    /** Sends with a given message id, e.g. twice the same to simulate a redelivery. */
+    public UUID send(String topic, UUID orderId, Object message, UUID messageId) {
+      return sendRaw(topic, orderId.toString(), codec.write(message), messageId);
+    }
+
+    public UUID sendRaw(String topic, String key, String payload, UUID messageId) {
+      var record = new ProducerRecord<>(topic, key, payload);
+      record.headers().add(Headers.MESSAGE_ID, Headers.encode(messageId));
+      try {
+        kafka.send(record).get(10, TimeUnit.SECONDS);
+      } catch (Exception e) {
+        throw new IllegalStateException("Could not send test message to " + topic, e);
+      }
+      return messageId;
     }
   }
 
@@ -55,9 +97,14 @@ public final class TestSupport {
 
     /** Waits for the next message on {@code topic} keyed by {@code orderId}. */
     public String next(String topic, UUID orderId) {
+      return nextRecord(topic, orderId).value();
+    }
+
+    /** Like {@link #next}, with headers. */
+    public ConsumerRecord<String, String> nextRecord(String topic, UUID orderId) {
       long deadline = System.nanoTime() + TIMEOUT.toNanos();
       while (System.nanoTime() < deadline) {
-        String found = take(topic, orderId);
+        ConsumerRecord<String, String> found = take(topic, orderId);
         if (found != null) {
           return found;
         }
@@ -72,9 +119,9 @@ public final class TestSupport {
       long deadline = System.nanoTime() + wait.toNanos();
       while (System.nanoTime() < deadline) {
         poll();
-        String found = take(topic, orderId);
+        ConsumerRecord<String, String> found = take(topic, orderId);
         if (found != null) {
-          throw new AssertionError("Unexpected message on %s: %s".formatted(topic, found));
+          throw new AssertionError("Unexpected message on %s: %s".formatted(topic, found.value()));
         }
       }
     }
@@ -83,13 +130,13 @@ public final class TestSupport {
       consumer.poll(Duration.ofMillis(200)).forEach(unread::add);
     }
 
-    private String take(String topic, UUID orderId) {
+    private ConsumerRecord<String, String> take(String topic, UUID orderId) {
       Iterator<ConsumerRecord<String, String>> it = unread.iterator();
       while (it.hasNext()) {
         ConsumerRecord<String, String> record = it.next();
         if (record.topic().equals(topic) && orderId.toString().equals(record.key())) {
           it.remove();
-          return record.value();
+          return record;
         }
       }
       return null;

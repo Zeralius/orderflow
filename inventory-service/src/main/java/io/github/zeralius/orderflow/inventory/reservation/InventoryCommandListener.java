@@ -5,40 +5,55 @@ import io.github.zeralius.orderflow.common.messaging.InventoryCommand.ReleaseSto
 import io.github.zeralius.orderflow.common.messaging.InventoryCommand.ReserveStock;
 import io.github.zeralius.orderflow.common.messaging.InventoryReply;
 import io.github.zeralius.orderflow.common.messaging.Topics;
-import io.github.zeralius.orderflow.inventory.messaging.KafkaMessages;
+import io.github.zeralius.orderflow.messaging.Inbox;
+import io.github.zeralius.orderflow.messaging.MessageCodec;
+import io.github.zeralius.orderflow.messaging.Outbox;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * One transaction per command: the inbox entry, the stock change and the reply in the outbox commit
+ * together, or not at all (and Kafka redelivers the command).
+ */
 @Component
-class InventoryCommandListener {
+public class InventoryCommandListener {
 
   private static final Logger log = LoggerFactory.getLogger(InventoryCommandListener.class);
 
   private final ReservationService reservations;
-  private final KafkaMessages messages;
+  private final Inbox inbox;
+  private final Outbox outbox;
+  private final MessageCodec codec;
 
-  InventoryCommandListener(ReservationService reservations, KafkaMessages messages) {
+  InventoryCommandListener(
+      ReservationService reservations, Inbox inbox, Outbox outbox, MessageCodec codec) {
     this.reservations = reservations;
-    this.messages = messages;
+    this.inbox = inbox;
+    this.outbox = outbox;
+    this.codec = codec;
   }
 
   @KafkaListener(topics = Topics.INVENTORY_COMMANDS)
-  void on(String payload) {
-    InventoryCommand command = messages.read(payload, InventoryCommand.class);
+  @Transactional
+  public void on(ConsumerRecord<String, String> record) {
+    if (!inbox.firstDelivery(record)) {
+      return;
+    }
+    InventoryCommand command = codec.read(record.value(), InventoryCommand.class);
     InventoryReply reply =
         switch (command) {
           case ReserveStock reserve -> reservations.reserve(reserve);
           case ReleaseStock release -> reservations.release(release);
         };
+    outbox.add(Topics.INVENTORY_REPLIES, command.orderId(), reply);
     log.info(
         "Order {}: {} -> {}",
         command.orderId(),
         command.getClass().getSimpleName(),
         reply.getClass().getSimpleName());
-    // The reservation is committed at this point. If sending fails, Kafka redelivers the command
-    // and the idempotent service answers the same again.
-    messages.send(Topics.INVENTORY_REPLIES, command.orderId(), reply);
   }
 }

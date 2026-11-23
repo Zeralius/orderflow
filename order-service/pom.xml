@@ -20,6 +20,10 @@
             <artifactId>orderflow-common</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.github.zeralius.orderflow</groupId>
+            <artifactId>orderflow-messaging</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
