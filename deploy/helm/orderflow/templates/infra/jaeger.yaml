@@ -1,0 +1,35 @@
+{{- if and .Values.devInfrastructure.enabled .Values.jaeger.enabled }}
+{{- $ctx := dict "root" $ "name" "jaeger" "component" "observability" }}
+# Jaeger all-in-one: receives traces over OTLP (4318), keeps them in memory, UI on the NodePort
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  labels:
+    {{- include "orderflow.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "orderflow.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orderflow.labels" $ctx | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: jaeger
+          image: {{ .Values.jaeger.image }}
+          ports:
+            - name: http
+              containerPort: 16686
+            - name: otlp-http
+              containerPort: 4318
+          readinessProbe:
+            httpGet: {path: /, port: http}
+          resources:
+            {{- toYaml .Values.jaeger.resources | nindent 12 }}
+---
+{{ include "orderflow.service" (dict "root" $ "name" "jaeger" "component" "observability" "ports" (list (dict "name" "http" "port" 16686 "nodePort" .Values.jaeger.nodePort) (dict "name" "otlp-http" "port" 4318))) }}
+{{- end }}

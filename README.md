@@ -4,7 +4,7 @@
 
 An event-driven online-shop backend: Spring Boot microservices that talk over Apache Kafka. One order runs as a **saga** across the services, and every failure path (out of stock, payment declined) is handled and undone where needed.
 
-> Status: **feature-complete core**. The saga runs across the services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Customers get an email when their order is confirmed or cancelled. Everything sits behind a rate-limited API gateway with one Swagger UI for all APIs, and users log in through Keycloak. ArchUnit rules enforce the architecture in every build. Every service reports metrics to Prometheus (with a Grafana dashboard), and one order is one trace across all services, even through Kafka and the outbox. An end-to-end test runs the real Docker images with real logins, real email and real traces. Next: Kubernetes and a cloud deployment (see [Roadmap](#roadmap)).
+> Status: **feature-complete core**. The saga runs across the services with compensation, over reliable messaging (transactional outbox, inbox, dead-letter topics). Customers get an email when their order is confirmed or cancelled. Everything sits behind a rate-limited API gateway with one Swagger UI for all APIs, and users log in through Keycloak. ArchUnit rules enforce the architecture in every build. Every service reports metrics to Prometheus (with a Grafana dashboard), and one order is one trace across all services, even through Kafka and the outbox. An end-to-end test runs the real Docker images with real logins, real email and real traces. The whole system also runs on Kubernetes from one Helm chart, and CI installs it on a kind cluster and places an order through it on every push. Next: a cloud deployment (see [Roadmap](#roadmap)).
 
 ## Architecture
 
@@ -165,7 +165,7 @@ Order states: `PENDING → STOCK_RESERVED → CONFIRMED`, or `PENDING → CANCEL
 
 ## Tech stack
 
-Java 25 (records, sealed interfaces, pattern-matching `switch`) · Spring Boot 4.2 · Micrometer + Prometheus + Grafana · OpenTelemetry (OTLP) + Jaeger · Spring Security 7 (OAuth2 resource server) · Keycloak 26 · Spring Cloud Gateway (Server WebMVC) · Bucket4j · springdoc-openapi / Swagger UI · Spring Mail + Mailpit · ArchUnit · Spring for Apache Kafka · Maven (multi-module, wrapper) · Apache Kafka 4.4 (KRaft) · PostgreSQL 18 · Flyway · Spring Data JPA / Hibernate · Bean Validation · RFC 9457 Problem Details · Testcontainers · JUnit 5 · AssertJ · Spotless · JaCoCo · Docker Compose · GitHub Actions
+Java 25 (records, sealed interfaces, pattern-matching `switch`) · Spring Boot 4.2 · Micrometer + Prometheus + Grafana · OpenTelemetry (OTLP) + Jaeger · Spring Security 7 (OAuth2 resource server) · Keycloak 26 · Spring Cloud Gateway (Server WebMVC) · Bucket4j · springdoc-openapi / Swagger UI · Spring Mail + Mailpit · ArchUnit · Spring for Apache Kafka · Maven (multi-module, wrapper) · Apache Kafka 4.4 (KRaft) · PostgreSQL 18 · Flyway · Spring Data JPA / Hibernate · Bean Validation · RFC 9457 Problem Details · Testcontainers · JUnit 5 · AssertJ · Spotless · JaCoCo · Docker Compose · Kubernetes + Helm (kind locally) · GitHub Actions
 
 ## Run it locally
 
@@ -203,6 +203,16 @@ java -jar payment-service/target/payment-service-0.1.0-SNAPSHOT.jar
 java -jar notification-service/target/notification-service-0.1.0-SNAPSHOT.jar
 java -jar gateway/target/gateway-0.1.0-SNAPSHOT.jar
 ```
+
+**Or on Kubernetes**, with [kind](https://kind.sigs.k8s.io/) and [Helm](https://helm.sh/) installed (stop Compose first, the ports are the same):
+
+```bash
+deploy/kind.sh            # builds, starts a kind cluster, installs the chart, runs helm test (first run ~5 min)
+kubectl -n orderflow get pods
+deploy/kind.sh --delete   # removes the cluster
+```
+
+Everything in the table above is then at the same address, so the commands below work unchanged. See [Kubernetes](#kubernetes).
 
 ### Try the three outcomes
 
@@ -246,6 +256,45 @@ More to look at:
 - http://localhost:16686: each order as one trace through all services
 - Kafka UI at http://localhost:8090: every command, reply and event on its topic, with its `orderflow-message-id` header; failed messages on the `.dlt` topics
 - The tables `outbox_messages` and `processed_messages` in each database (`psql -h localhost -p 5433 -U orderflow orders`)
+
+## Kubernetes
+
+The Helm chart in [`deploy/helm/orderflow`](deploy/helm/orderflow) installs the whole system: the four services and the gateway, plus (switchable) the infrastructure they need. [`deploy/kind.sh`](deploy/kind.sh) runs it on a local [kind](https://kind.sigs.k8s.io/) cluster, and CI does the same on every push.
+
+```mermaid
+flowchart LR
+    you([browser / curl]) -->|localhost:8080| gw[gateway<br/>NodePort]
+    you -->|localhost:8180| kc[Keycloak]
+    gw --> os[order-service<br/>2 replicas] & inv[inventory-service] & pay[payment-service]
+    os & inv & pay & notif[notification-service] --> pg[(PostgreSQL<br/>StatefulSet)] & kafka{{Kafka<br/>StatefulSet}}
+    notif --> mail[Mailpit]
+    prom[Prometheus] -. finds pods via the API .-> os & inv & pay & notif & gw
+```
+
+What the chart does:
+
+- **Probes from Spring Boot.** Startup, liveness and readiness use `/actuator/health/liveness` and `/readiness`. A pod gets traffic only when it is ready, and a rolling update starts a new pod before it stops an old one (`maxUnavailable: 0`).
+- **Clean shutdowns.** A `preStop` pause lets Kubernetes take the pod out of the Service before Spring Boot shuts down gracefully, so no request lands on a pod that is going away.
+- **Two order-service replicas**, safe because of how the messaging works: the outbox relays lock rows with `SKIP LOCKED`, so no message is sent twice, and Kafka splits the reply topics between the two consumers. A PodDisruptionBudget keeps one running during node drains.
+- **Locked down.** Images run as a fixed non-root user, with a read-only root filesystem, no Linux capabilities and the default seccomp profile. NetworkPolicies let only the gateway (and Prometheus) reach the services, and only the apps that use them reach PostgreSQL and Kafka.
+- **Configuration from the cluster.** Shared settings live in a ConfigMap (the pods restart when it changes), the database login in a Secret. The services keep the same environment variables as in Docker Compose.
+- **Prometheus finds the pods itself** through the Kubernetes API (read-only, this namespace only), so every replica is scraped, and a new service only needs the `prometheus.io/scrape` annotation. The Grafana dashboard is the same file as in Compose.
+- **Dependencies first.** A tiny init container waits until PostgreSQL and Kafka answer, so the apps don't crash-loop while the cluster comes up.
+- **`helm test`** logs in as alice, places an order through the gateway and waits until the saga confirms it, all from inside the cluster.
+
+**Demo infrastructure, switchable.** PostgreSQL, Kafka, Keycloak, Mailpit, Jaeger, Prometheus, Grafana and Kafka UI run in the cluster as single instances. That is fine for a laptop or a demo, not for production. In a real environment you'd set `devInfrastructure.enabled=false` and point `database`, `kafka` and `oidc` at managed services; the apps don't change.
+
+Run it by hand instead of with the script:
+
+```bash
+kind create cluster --config deploy/kind/cluster.yaml
+./mvnw -q package -DskipTests
+for app in gateway order-service inventory-service payment-service notification-service; do
+  docker build -t orderflow/$app:dev $app && kind load docker-image orderflow/$app:dev --name orderflow
+done
+helm install orderflow deploy/helm/orderflow -n orderflow --create-namespace --wait
+helm test orderflow -n orderflow --logs
+```
 
 ## Build and test
 
@@ -293,6 +342,8 @@ More to look at:
   - Swagger UI and every service's API description through the gateway
   - one order shows up in Jaeger as one trace spanning all five services
 
+**Kubernetes** (CI job `kubernetes`): lints the chart, checks that its copies of the realm, dashboard and database script match the Compose files, installs everything on a kind cluster and runs `helm test`.
+
 Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per module ends up in `<module>/target/site/jacoco/index.html`.
 
 ## Design decisions
@@ -339,6 +390,10 @@ Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per 
 
 **Prometheus pulls; traces are pushed.** Metrics are scraped from `/actuator/prometheus` (no collector needed, easy to inspect by hand), while spans go out over OTLP, the vendor-neutral protocol: switching from Jaeger to Tempo, Honeycomb or Datadog is a configuration change. Every trace is kept (sampling 100%) because this is a demo; in production it would be a small fraction.
 
+**A hand-written chart, not Bitnami subcharts.** The chart is small enough to read in one sitting, and every setting in it is there for a reason this README explains. The infrastructure part is deliberately simple (one PostgreSQL, one Kafka broker) because in production it would be managed services anyway, so it sits behind one switch.
+
+**NodePorts locally, an ingress in the cloud.** kind maps the NodePorts to the same localhost ports as Docker Compose, so Keycloak's issuer (`http://localhost:8180`) is the same for the browser, curl and the services. A public deployment needs a real hostname and TLS in front of the gateway and Keycloak; that comes with the cloud step.
+
 **Error pages pass security, and a down service is a 503.** Spring Security also guards the error page. With a "deny everything else" rule, a service that was down reached the client as a misleading 403. The shared security defaults now let error dispatches through, and the gateway answers an unreachable service with an explicit 503 Problem Detail.
 
 ## Roadmap
@@ -349,7 +404,8 @@ Testcontainers starts real PostgreSQL 18 and Kafka 4.4 containers. Coverage per 
 - [x] Security & edge: Keycloak (OAuth2/JWT, roles, audience), Spring Cloud Gateway, ownership checks, end-to-end with real logins
 - [x] Edge polish: notification-service with Mailpit, rate limiting at the gateway, OpenAPI + one Swagger UI with Keycloak login, ArchUnit rules
 - [x] Observability: business metrics with Micrometer + Prometheus, a provisioned Grafana dashboard, OpenTelemetry tracing into Jaeger, traces carried across the outbox
-- [ ] Kubernetes (Helm), cloud deployment, Spring AI order-support assistant
+- [x] Kubernetes: one Helm chart for the whole system, kind locally and in CI, probes, graceful rollouts, NetworkPolicies, non-root read-only pods, `helm test`
+- [ ] Cloud deployment, Spring AI order-support assistant
 
 ## License
 

@@ -1,0 +1,16 @@
+# Local Kubernetes cluster for OrderFlow: `kind create cluster --config deploy/kind/cluster.yaml`
+# (or just run deploy/kind.sh). The NodePorts of the chart appear on the same localhost ports as
+# with Docker Compose, so stop Compose first: `docker compose --profile apps down`.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: orderflow
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - {containerPort: 30080, hostPort: 8080, listenAddress: 127.0.0.1}   # gateway
+      - {containerPort: 30180, hostPort: 8180, listenAddress: 127.0.0.1}   # Keycloak
+      - {containerPort: 30300, hostPort: 3000, listenAddress: 127.0.0.1}   # Grafana
+      - {containerPort: 30686, hostPort: 16686, listenAddress: 127.0.0.1}  # Jaeger
+      - {containerPort: 30825, hostPort: 8025, listenAddress: 127.0.0.1}   # Mailpit
+      - {containerPort: 30909, hostPort: 9090, listenAddress: 127.0.0.1}   # Prometheus
+      - {containerPort: 30890, hostPort: 8090, listenAddress: 127.0.0.1}   # Kafka UI

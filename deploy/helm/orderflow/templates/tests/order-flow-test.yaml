@@ -1,0 +1,58 @@
+{{- $ctx := dict "root" $ "name" "order-flow-test" "component" "test" }}
+# `helm test <release>`: logs in as alice, places an order through the gateway like a client would,
+# and waits until the saga has confirmed it. Proves the whole chain inside the cluster: gateway,
+# Keycloak tokens, all services, PostgreSQL and Kafka.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: order-flow-test
+  labels:
+    {{- include "orderflow.labels" $ctx | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    {{- include "orderflow.podSecurity" . | nindent 4 }}
+  containers:
+    - name: order-flow-test
+      image: {{ .Values.tests.image }}
+      securityContext:
+        # The image's user (curl_user) by number, so runAsNonRoot can be checked
+        runAsUser: 100
+        {{- include "orderflow.containerSecurity" . | nindent 8 }}
+      command:
+        - sh
+        - -c
+        - |
+          set -eu
+          token=$(curl -sf http://keycloak:8080/realms/orderflow/protocol/openid-connect/token \
+            -d grant_type=password -d client_id=orderflow-demo -d username=alice -d password=alice \
+            | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+          echo "logged in as alice"
+
+          location=$(curl -sf -o /dev/null -D - -X POST http://gateway:8080/api/orders \
+            -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d '{"lines":[{"sku":"BOOK-JAVA25","quantity":1}]}' \
+            | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          echo "order placed: $location"
+          case "$location" in
+            http://gateway:8080/api/orders/*) ;;
+            *) echo "Location does not point at the gateway"; exit 1 ;;
+          esac
+
+          for i in $(seq 1 60); do
+            order=$(curl -sf "$location" -H "Authorization: Bearer $token")
+            case "$order" in
+              *'"status":"CONFIRMED"'*) echo "confirmed after ${i}s: $order"; exit 0 ;;
+              *'"status":"CANCELLED"'*) echo "cancelled: $order"; exit 1 ;;
+            esac
+            sleep 1
+          done
+          echo "not confirmed within 60s: $order"
+          exit 1
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {memory: 64Mi}

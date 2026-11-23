@@ -1,0 +1,149 @@
+{{- /* One Deployment + Service per entry in .Values.apps (the four services and the gateway) */ -}}
+{{- range $name, $app := .Values.apps }}
+{{- $ctx := dict "root" $ "name" $name "component" $app.role }}
+{{- $waitFor := list }}
+{{- if $app.database }}{{ $waitFor = append $waitFor (printf "%s %v" $.Values.database.host $.Values.database.port) }}{{ end }}
+{{- if $app.kafka }}{{ $waitFor = append $waitFor (replace ":" " " (first (splitList "," $.Values.kafka.bootstrapServers))) }}{{ end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "orderflow.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $app.replicas }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0       # a new pod must be ready before an old one goes
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "orderflow.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orderflow.labels" $ctx | nindent 8 }}
+        orderflow.io/role: {{ $app.role }}
+        {{- if $app.database }}
+        orderflow.io/database-client: "true"
+        {{- end }}
+        {{- if $app.kafka }}
+        orderflow.io/kafka-client: "true"
+        {{- end }}
+      annotations:
+        # Prometheus finds the pods by this annotation (see templates/infra/prometheus.yaml)
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        # `kubectl logs` shows the app, not the init container
+        kubectl.kubernetes.io/default-container: {{ $name }}
+        # Roll the pods when the shared settings change
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") $ | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "orderflow.podSecurity" $ | nindent 8 }}
+      # Spring Boot shuts down gracefully (finishes running requests); give it time for that
+      terminationGracePeriodSeconds: 45
+      {{- if $waitFor }}
+      initContainers:
+        - name: wait-for-dependencies
+          image: {{ $.Values.waitImage }}
+          command:
+            - sh
+            - -c
+            - |
+              for target in {{ range $waitFor }}"{{ . }}" {{ end }}; do
+                until nc -z -w 2 $target; do echo "waiting for $target"; sleep 2; done
+              done
+          securityContext:
+            runAsUser: 10001
+            {{- include "orderflow.containerSecurity" $ | nindent 12 }}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 32Mi}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.repository }}/{{ $name }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $app.port }}
+          envFrom:
+            - configMapRef:
+                name: orderflow-config
+          env:
+            {{- if $app.database }}
+            - name: DB_URL
+              value: "jdbc:postgresql://{{ $.Values.database.host }}:{{ $.Values.database.port }}/{{ $app.database }}"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: {name: {{ include "orderflow.databaseSecret" $ }}, key: username}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ include "orderflow.databaseSecret" $ }}, key: password}
+            {{- end }}
+            {{- if $app.oidc }}
+            - name: OIDC_ISSUER
+              value: {{ $.Values.oidc.issuer | quote }}
+            - name: OIDC_JWKS
+              value: {{ $.Values.oidc.jwkSetUri | quote }}
+            {{- end }}
+            {{- with ($app.javaToolOptions | default $.Values.appDefaults.javaToolOptions) }}
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $key, $value := $app.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          # Spring Boot's own probe endpoints: liveness = the app works, readiness = send it traffic
+          startupProbe:
+            httpGet: {path: /actuator/health/liveness, port: http}
+            periodSeconds: 5
+            failureThreshold: 36    # up to 3 minutes to start
+          livenessProbe:
+            httpGet: {path: /actuator/health/liveness, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /actuator/health/readiness, port: http}
+            periodSeconds: 5
+            failureThreshold: 2
+          lifecycle:
+            # Keep serving a few seconds while Kubernetes takes the pod out of the Service,
+            # so no request lands on a pod that is already shutting down
+            preStop:
+              sleep: {seconds: 5}
+          resources:
+            {{- toYaml ($app.resources | default $.Values.appDefaults.resources) | nindent 12 }}
+          securityContext:
+            {{- include "orderflow.containerSecurity" $ | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The root filesystem is read-only; Tomcat and the JVM write their temp files here
+        - name: tmp
+          emptyDir: {}
+---
+{{ include "orderflow.service" (dict "root" $ "name" $name "component" $app.role "ports" (list (dict "name" "http" "port" $app.port "nodePort" $app.nodePort))) }}
+{{- if gt (int $app.replicas) 1 }}
+---
+# Node drains and cluster upgrades take at most one pod at a time
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "orderflow.labels" $ctx | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "orderflow.selectorLabels" $ctx | nindent 6 }}
+{{- end }}
+{{- end }}

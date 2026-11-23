@@ -1,0 +1,27 @@
+# Settings every app reads (environment variables, same names as in compose.yaml)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orderflow-config
+  labels:
+    {{- include "orderflow.labels" (dict "root" $ "name" "orderflow-config" "component" "config") | nindent 4 }}
+data:
+  KAFKA_BOOTSTRAP_SERVERS: {{ .Values.kafka.bootstrapServers | quote }}
+  {{- with .Values.tracing.otlpEndpoint }}
+  MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  # /actuator/health/liveness and /readiness (Spring Boot turns them on in Kubernetes anyway)
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+{{- if not .Values.database.existingSecret }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orderflow-database
+  labels:
+    {{- include "orderflow.labels" (dict "root" $ "name" "orderflow-database" "component" "config") | nindent 4 }}
+type: Opaque
+stringData:
+  username: {{ .Values.database.username | quote }}
+  password: {{ .Values.database.password | quote }}
+{{- end }}

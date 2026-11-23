@@ -1,0 +1,36 @@
+{{- if and .Values.devInfrastructure.enabled .Values.mailpit.enabled }}
+{{- $ctx := dict "root" $ "name" "mailpit" "component" "mail" }}
+# Catches every email the notification service sends; web UI on the NodePort
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  labels:
+    {{- include "orderflow.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "orderflow.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orderflow.labels" $ctx | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: mailpit
+          image: {{ .Values.mailpit.image }}
+          ports:
+            - name: smtp
+              containerPort: 1025
+            - name: http
+              containerPort: 8025
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+---
+{{ include "orderflow.service" (dict "root" $ "name" "mailpit" "component" "mail" "ports" (list (dict "name" "smtp" "port" 1025) (dict "name" "http" "port" 8025 "nodePort" .Values.mailpit.nodePort))) }}
+{{- end }}

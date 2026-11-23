@@ -1,0 +1,20 @@
+OrderFlow is installed in namespace {{ .Release.Namespace }}.
+
+Watch it start (the apps wait for PostgreSQL and Kafka, about 1-2 minutes):
+  kubectl -n {{ .Release.Namespace }} get pods -w
+
+Check the whole chain (logs in, places an order, waits for the saga to confirm it):
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+{{- if .Values.apps.gateway.nodePort }}
+
+With the kind cluster from deploy/kind/cluster.yaml:
+  API gateway + Swagger UI   http://localhost:8080/swagger-ui.html
+{{- if .Values.devInfrastructure.enabled }}
+  Keycloak                   http://localhost:8180   (demo users alice/alice, bob/bob, carol/carol, admin/admin)
+  Grafana                    http://localhost:3000
+  Jaeger                     http://localhost:16686
+  Mailpit                    http://localhost:8025
+  Prometheus                 http://localhost:9090
+  Kafka UI                   http://localhost:8090
+{{- end }}
+{{- end }}

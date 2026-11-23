@@ -1,0 +1,66 @@
+{{- if .Values.networkPolicies.enabled }}
+# The services are only reachable through the gateway; Prometheus may scrape them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: services-behind-gateway
+  labels:
+    {{- include "orderflow.labels" (dict "root" $ "name" "services-behind-gateway" "component" "network") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      orderflow.io/role: service
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              orderflow.io/role: gateway
+        - podSelector:
+            matchLabels:
+              orderflow.io/role: prometheus
+      ports:
+        - port: http
+{{- if .Values.devInfrastructure.enabled }}
+---
+# Only the apps that own a database talk to PostgreSQL
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-clients-only
+  labels:
+    {{- include "orderflow.labels" (dict "root" $ "name" "postgres-clients-only" "component" "network") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              orderflow.io/database-client: "true"
+      ports:
+        - port: 5432
+---
+# Only the apps that send or receive messages (and Kafka UI) talk to Kafka
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka-clients-only
+  labels:
+    {{- include "orderflow.labels" (dict "root" $ "name" "kafka-clients-only" "component" "network") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              orderflow.io/kafka-client: "true"
+      ports:
+        - port: 9092
+{{- end }}
+{{- end }}

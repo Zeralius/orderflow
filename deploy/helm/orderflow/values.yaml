@@ -1,0 +1,167 @@
+# OrderFlow on Kubernetes. The defaults fit a local kind cluster (deploy/kind/cluster.yaml):
+# images built on your machine and loaded into kind, demo infrastructure inside the cluster,
+# and the web UIs on NodePorts that kind maps to the same localhost ports as Docker Compose.
+#
+# One release per namespace: the objects have plain names (order-service, postgres, ...).
+
+image:
+  # Images are named <repository>/<service>:<tag>, e.g. orderflow/order-service:dev
+  repository: orderflow
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# The four services and the gateway. Every entry becomes a Deployment and a Service.
+apps:
+  gateway:
+    port: 8080
+    # The rate limit is counted in memory, per instance; more replicas need a shared store (Redis)
+    replicas: 1
+    role: gateway
+    oidc: true
+    nodePort: 30080           # http://localhost:8080 with the kind config
+    env:
+      ORDER_SERVICE_URL: http://order-service:8081
+      INVENTORY_SERVICE_URL: http://inventory-service:8082
+      PAYMENT_SERVICE_URL: http://payment-service:8083
+  order-service:
+    port: 8081
+    # Two replicas on purpose: the outbox relays lock rows with SKIP LOCKED, so they never send
+    # the same message twice, and Kafka splits the reply topics (3 partitions) between the consumers
+    replicas: 2
+    role: service
+    database: orders
+    kafka: true
+    oidc: true
+  inventory-service:
+    port: 8082
+    replicas: 1
+    role: service
+    database: inventory
+    kafka: true
+    oidc: true
+  payment-service:
+    port: 8083
+    replicas: 1
+    role: service
+    database: payments
+    kafka: true
+    oidc: true
+  notification-service:
+    port: 8084
+    replicas: 1
+    role: service
+    database: notifications
+    kafka: true
+    env:
+      MAIL_HOST: mailpit
+      MAIL_PORT: "1025"
+
+# Applied to every app unless the app sets its own
+appDefaults:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 384Mi
+    limits:
+      # No CPU limit: a throttled JVM starts slowly and stalls in GC; the request reserves the share
+      memory: 768Mi
+  # Extra JVM flags; the image already sets -XX:MaxRAMPercentage=75 (heap follows the memory limit)
+  javaToolOptions: ""
+
+# Where the apps find their dependencies. With devInfrastructure.enabled these point at the pods
+# below; in a real environment they point at managed services (switch devInfrastructure off).
+database:
+  # jdbc:postgresql://<host>:<port>/<database of the app>
+  host: postgres
+  port: 5432
+  # Created as a Secret by this chart; set existingSecret to use your own (keys: username, password)
+  username: orderflow
+  password: orderflow         # demo only
+  existingSecret: ""
+kafka:
+  bootstrapServers: kafka:9092
+oidc:
+  # The issuer the tokens carry: the address browsers and clients use to reach Keycloak
+  issuer: http://localhost:8180/realms/orderflow
+  # Where the services fetch the signing keys, inside the cluster
+  jwkSetUri: http://keycloak:8080/realms/orderflow/protocol/openid-connect/certs
+tracing:
+  # OTLP over HTTP; leave empty to export no traces
+  otlpEndpoint: http://jaeger:4318/v1/traces
+
+# Only the gateway is reachable from everywhere. The services accept traffic from the gateway
+# (and Prometheus), PostgreSQL and Kafka only from the apps that use them.
+networkPolicies:
+  enabled: true
+
+# Tiny image for the init containers that wait for PostgreSQL and Kafka before an app starts
+waitImage: busybox:1.37.0
+
+# Demo infrastructure, one instance of each. Fine for a laptop or a demo cluster; for anything
+# real use managed PostgreSQL / Kafka / an identity provider and set this to false.
+devInfrastructure:
+  enabled: true
+
+postgres:
+  image: postgres:18-alpine
+  storage: 1Gi                # PersistentVolumeClaim; kind provides a local-path StorageClass
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 512Mi}
+
+kafkaBroker:
+  image: apache/kafka:4.4.0
+  storage: 2Gi
+  heap: -Xms256m -Xmx512m
+  resources:
+    requests: {cpu: 200m, memory: 768Mi}
+    limits: {memory: 1Gi}
+
+keycloak:
+  image: quay.io/keycloak/keycloak:26.8.2
+  # The browser-facing address; must match oidc.issuer
+  publicUrl: http://localhost:8180
+  nodePort: 30180
+  adminUsername: admin        # Keycloak's own console, demo only
+  adminPassword: admin
+  resources:
+    requests: {cpu: 200m, memory: 768Mi}
+    limits: {memory: 1536Mi}
+
+mailpit:
+  enabled: true
+  image: axllent/mailpit:v1.34.0
+  nodePort: 30825
+
+jaeger:
+  enabled: true
+  image: jaegertracing/jaeger:2.23.0
+  nodePort: 30686
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+prometheus:
+  enabled: true
+  image: prom/prometheus:v3.16.0
+  nodePort: 30909
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+grafana:
+  enabled: true
+  image: grafana/grafana:13.2
+  nodePort: 30300
+
+kafkaUi:
+  enabled: true
+  image: kafbat/kafka-ui:v1.5.1
+  nodePort: 30890
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 512Mi}
+
+# `helm test orderflow`: places an order through the gateway and waits until it is confirmed
+tests:
+  image: curlimages/curl:8.17.0
