@@ -113,6 +113,7 @@ class GatewayTest {
           "/",
           exchange -> {
             received.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath());
+            exchange.getRequestBody().readAllBytes();
             byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             if (exchange.getRequestMethod().equals("POST")) {

@@ -6,6 +6,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -74,7 +75,13 @@ class GatewayRateLimitTest {
       server.createContext(
           "/",
           exchange -> {
-            exchange.sendResponseHeaders(200, -1);
+            // Behave like a real server: read the request, answer with a body. A bodiless reply
+            // that ignores the request raced with the JDK HTTP client on CI (NPE in its internals).
+            exchange.getRequestBody().readAllBytes();
+            byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
             exchange.close();
           });
       server.start();
